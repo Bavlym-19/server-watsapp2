@@ -1,0 +1,147 @@
+
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>السيرفر الأول | عقارات</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        :root { --p: #1e3a8a; --s: #10b981; --bg: #f8fafc; --c: #ffffff; --t: #1e293b; }
+        [data-theme="dark"] { --bg: #0f172a; --c: #1e293b; --t: #f8fafc; }
+        body { font-family: 'Cairo', sans-serif; background: var(--bg); color: var(--t); margin: 0; transition: 0.3s; display: flex; flex-direction: column; min-height: 100vh; }
+        header { width: 100%; padding: 15px 0; background: var(--c); box-shadow: 0 2px 10px rgba(0,0,0,0.1); display: flex; justify-content: space-around; align-items: center; position: sticky; top: 0; z-index: 10; }
+        .container { max-width: 1100px; width: 95%; margin: 30px auto; display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
+        .card { background: var(--c); border-radius: 15px; padding: 25px; box-shadow: 0 5px 15px rgba(0,0,0,0.05); text-align: center; border: 1px solid transparent; }
+        .card:hover { border-color: var(--p); }
+        .qr-box { margin: 15px 0; min-height: 220px; background: #f1f5f9; border-radius: 10px; display: flex; align-items: center; justify-content: center; }
+        [data-theme="dark"] .qr-box { background: #334155; }
+        .qr-box img { max-width: 200px; }
+        .badge { padding: 5px 12px; border-radius: 20px; font-size: 0.85rem; font-weight: bold; }
+        .off { background: #fee2e2; color: #dc2626; }
+        .on { background: #dcfce7; color: #16a34a; }
+        .wait { background: #fef3c7; color: #d97706; }
+        .btn { width: 100%; padding: 10px; border-radius: 8px; border: none; cursor: pointer; font-weight: bold; margin-top: 10px; font-family: inherit; }
+        .btn-p { background: var(--p); color: #fff; }
+        .btn-s { background: transparent; color: var(--p); border: 2px solid var(--p); }
+        .pairing { margin-top: 10px; display: none; }
+        .pairing input { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px; margin-bottom: 5px; text-align: center; }
+        footer { margin-top: auto; padding: 20px; text-align: center; opacity: 0.7; }
+        [lang="en"] { direction: ltr; }
+    </style>
+</head>
+<body data-theme="light">
+    <header>
+        <div style="font-weight:bold; color:var(--p); font-size:1.2rem;"><i class="fas fa-building"></i> <span data-i18n="brand">السيرفر الأول</span></div>
+        <div>
+            <button onclick="toggleLang()" class="btn" style="width:auto; margin:0 5px; padding:5px 10px;">EN</button>
+            <button onclick="toggleTheme()" class="btn" style="width:auto; margin:0; padding:5px 10px;"><i class="fas fa-moon"></i></button>
+        </div>
+    </header>
+
+    <div class="container">
+        <div id="session1" class="card">
+            <h3 data-i18n="s1">الجلسة الأولى</h3>
+            <span id="st1" class="badge off" data-i18n="off">غير متصل</span>
+            <div id="qr1" class="qr-box"><i class="fas fa-qrcode fa-4x" style="color:#cbd5e1"></i></div>
+            <div id="pc1" style="font-size:1.5rem; color:var(--s); font-weight:bold;"></div>
+            <button class="btn btn-p" onclick="start('session1', false)" data-i18n="b1">بدء عبر QR</button>
+            <button class="btn btn-s" onclick="showP('session1')" data-i18n="b2">كود الربط</button>
+            <div id="f1" class="pairing">
+                <input type="text" id="ph1" placeholder="201234567890">
+                <button class="btn btn-p" onclick="start('session1', true)" data-i18n="ok">تأكيد</button>
+            </div>
+        </div>
+        <!-- تكرار للجلسات 2 و 3 -->
+        <div id="session2" class="card">
+            <h3 data-i18n="s2">الجلسة الثانية</h3>
+            <span id="st2" class="badge off" data-i18n="off">غير متصل</span>
+            <div id="qr2" class="qr-box"><i class="fas fa-qrcode fa-4x" style="color:#cbd5e1"></i></div>
+            <div id="pc2" style="font-size:1.5rem; color:var(--s); font-weight:bold;"></div>
+            <button class="btn btn-p" onclick="start('session2', false)" data-i18n="b1">بدء عبر QR</button>
+            <button class="btn btn-s" onclick="showP('session2')" data-i18n="b2">كود الربط</button>
+            <div id="f2" class="pairing">
+                <input type="text" id="ph2" placeholder="201234567890">
+                <button class="btn btn-p" onclick="start('session2', true)" data-i18n="ok">تأكيد</button>
+            </div>
+        </div>
+        <div id="session3" class="card">
+            <h3 data-i18n="s3">الجلسة الثالثة</h3>
+            <span id="st3" class="badge off" data-i18n="off">غير متصل</span>
+            <div id="qr3" class="qr-box"><i class="fas fa-qrcode fa-4x" style="color:#cbd5e1"></i></div>
+            <div id="pc3" style="font-size:1.5rem; color:var(--s); font-weight:bold;"></div>
+            <button class="btn btn-p" onclick="start('session3', false)" data-i18n="b1">بدء عبر QR</button>
+            <button class="btn btn-s" onclick="showP('session3')" data-i18n="b2">كود الربط</button>
+            <div id="f3" class="pairing">
+                <input type="text" id="ph3" placeholder="201234567890">
+                <button class="btn btn-p" onclick="start('session3', true)" data-i18n="ok">تأكيد</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io();
+        let lang = 'ar';
+        const txt = {
+            ar: { brand: "السيرفر الأول | عقارات", off: "غير متصل", wait: "جاري الاتصال...", on: "متصل ✅", b1: "بدء عبر QR", b2: "كود الربط", ok: "تأكيد", s1: "الجلسة الأولى", s2: "الجلسة الثانية", s3: "الجلسة الثالثة" },
+            en: { brand: "Server One | Real Estate", off: "Offline", wait: "Connecting...", on: "Connected ✅", b1: "Start via QR", b2: "Pairing Code", ok: "Confirm", s1: "Session 1", s2: "Session 2", s3: "Session 3" }
+        };
+
+        function toggleLang() {
+            lang = lang === 'ar' ? 'en' : 'ar';
+            document.documentElement.lang = lang;
+            document.documentElement.dir = lang === 'ar' ? 'rtl' : 'ltr';
+            document.querySelectorAll('[data-i18n]').forEach(el => el.innerText = txt[lang][el.dataset.i18n]);
+        }
+
+        function toggleTheme() {
+            const b = document.body;
+            b.dataset.theme = b.dataset.theme === 'light' ? 'dark' : 'light';
+        }
+
+        function showP(id) {
+            const f = document.getElementById('f' + id.replace('session', ''));
+            f.style.display = f.style.display === 'block' ? 'none' : 'block';
+        }
+
+        async function start(id, useP) {
+            const n = id.replace('session', '');
+            const st = document.getElementById('st' + n);
+            const ph = document.getElementById('ph' + n).value;
+            st.className = 'badge wait'; st.innerText = txt[lang].wait;
+            await fetch('/session/start', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sessionId: id, usePairingCode: useP, phoneNumber: ph })
+            });
+        }
+
+        socket.on("qr", d => {
+            const n = d.sessionId.replace('session', '');
+            document.getElementById('qr' + n).innerHTML = `<img src="${d.qrImage}">`;
+            document.getElementById('st' + n).innerText = "Scan QR";
+        });
+
+        socket.on("pairing_code", d => {
+            const n = d.sessionId.replace('session', '');
+            document.getElementById('pc' + n).innerText = d.code;
+            document.getElementById('qr' + n).innerHTML = '<i class="fas fa-mobile-alt fa-4x" style="color:var(--p)"></i>';
+        });
+
+        socket.on("status", d => {
+            const n = d.sessionId.replace('session', '');
+            const st = document.getElementById('st' + n);
+            if (d.status === "connected") {
+                st.className = 'badge on'; st.innerText = txt[lang].on;
+                document.getElementById('qr' + n).innerHTML = '<i class="fas fa-check-circle fa-4x" style="color:var(--s)"></i>';
+                document.getElementById('pc' + n).innerText = '';
+            } else {
+                st.className = 'badge off'; st.innerText = txt[lang].off;
+                document.getElementById('qr' + n).innerHTML = '<i class="fas fa-qrcode fa-4x" style="color:#cbd5e1"></i>';
+            }
+        });
+    </script>
+</body>
+</html>
