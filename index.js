@@ -18,22 +18,20 @@ const fs = require("fs");
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
-const port = process.env.PORT || 3000;
 
-// --- السطر المضاف: قراءة مفتاح الأمان من إعدادات ريندر ---
+// تعديل البورت إجباري لـ 7860 لـ Hugging Face
+const port = process.env.PORT || 7860; 
+
 const API_KEY = process.env.API_KEY || "Bavlym19"; 
 
 app.use(express.json());
 
-// Store active WhatsApp sessions
 const sessions = {};
 
-// HTML Page to show QR Code and pairing code options for multiple sessions
 app.get("/", (req, res) => {
     res.sendFile(path.join(__dirname, "index.html"));
 });
 
-// API to start a new session or get status of existing one
 app.post("/session/start", async (req, res) => {
     const { sessionId, usePairingCode, phoneNumber } = req.body;
 
@@ -48,14 +46,13 @@ app.post("/session/start", async (req, res) => {
     try {
         const sock = await startWhatsAppSession(sessionId, usePairingCode, phoneNumber);
         sessions[sessionId] = { sock, status: "connecting" };
-        res.json({ success: true, message: `Session <LaTex>${sessionId} started.` });
+        res.json({ success: true, message: `Session ${sessionId} started.` });
     } catch (error) {
-        console.error(`Error starting session $</LaTex>{sessionId}:`, error);
+        console.error(`Error starting session ${sessionId}:`, error);
         res.status(500).json({ success: false, error: error.message });
     }
 });
 
-// API to get status of a specific session
 app.get("/session/:sessionId/status", (req, res) => {
     const { sessionId } = req.params;
     if (sessions[sessionId]) {
@@ -70,7 +67,7 @@ async function startWhatsAppSession(sessionId, usePairingCode = false, phoneNumb
     const { state, saveCreds } = await useMultiFileAuthState(authPath);
     const { version, isLatest } = await fetchLatestBaileysVersion();
     
-    const logger = P({ level: "silent" }); // Use silent logger for less console spam
+    const logger = P({ level: "silent" });
     
     const sock = makeWASocket({
         version,
@@ -78,24 +75,24 @@ async function startWhatsAppSession(sessionId, usePairingCode = false, phoneNumb
             creds: state.creds,
             keys: makeCacheableSignalKeyStore(state.creds, logger),
         },
-        printQRInTerminal: false, // We will handle QR code via WebSocket
+        printQRInTerminal: false,
         logger,
-        browser: ['Chrome', 'Ubuntu', '1.0'], // Custom browser info
-        usePairingCode: usePairingCode, // Enable pairing code
-        phoneNumber: usePairingCode ? phoneNumber : undefined // Provide phone number for pairing code
+        browser: ['Chrome', 'Ubuntu', '1.0'],
+        usePairingCode: usePairingCode,
+        phoneNumber: usePairingCode ? phoneNumber : undefined
     });
 
     if (usePairingCode && !sock.user && phoneNumber) {
         const code = await sock.requestPairingCode(phoneNumber);
-        console.log(`Pairing Code for session ${sessionId}: <LaTex>${code}`);
+        console.log(`Pairing Code for session ${sessionId}: ${code}`);
         io.emit("pairing_code", { sessionId, code });
     }
 
     sock.ev.on("connection.update", async (update) => {
-        const { connection, lastDisconnect, qr, isNewLogin } = update;
+        const { connection, lastDisconnect, qr } = update;
         
         if (qr) {
-            console.log(`QR Code received for session $</LaTex>{sessionId}, emitting to socket...`);
+            console.log(`QR Code received for session ${sessionId}, emitting to socket...`);
             const qrImage = await qrcode.toDataURL(qr);
             io.emit("qr", { sessionId, qrImage });
             sessions[sessionId].status = "qr_received";
@@ -105,15 +102,13 @@ async function startWhatsAppSession(sessionId, usePairingCode = false, phoneNumb
             let reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
             if (reason === DisconnectReason.loggedOut) {
                 console.log(`Session ${sessionId} logged out. Deleting auth files.`);
-                // Optionally delete auth files to force new login
                 if (fs.existsSync(authPath)) fs.rmSync(authPath, { recursive: true, force: true });
                 sessions[sessionId].status = "logged_out";
                 io.emit("status", { sessionId, status: "logged_out" });
             } else {
-                console.log(`Connection closed for session ${sessionId} due to ${lastDisconnect?.error}, reconnecting...`);
+                console.log(`Connection closed for session ${sessionId}, reconnecting...`);
                 sessions[sessionId].status = "reconnecting";
                 io.emit("status", { sessionId, status: "reconnecting" });
-                // Reconnect logic
                 setTimeout(() => startWhatsAppSession(sessionId, usePairingCode, phoneNumber), 5000);
             }
         } else if (connection === "open") {
@@ -128,11 +123,9 @@ async function startWhatsAppSession(sessionId, usePairingCode = false, phoneNumb
     return sock;
 }
 
-// API to send message from Replit for a specific session
 app.post("/send-message", async (req, res) => {
     const { sessionId, number, message, key } = req.body;
 
-    // --- السطور المضافة: التأكد من صحة مفتاح الأمان ---
     if (key !== API_KEY) {
         return res.status(401).json({ error: "خطأ: مفتاح الأمان غير صحيح!" });
     }
@@ -143,19 +136,20 @@ app.post("/send-message", async (req, res) => {
 
     const session = sessions[sessionId];
     if (!session || !session.sock || session.status !== "connected") {
-        return res.status(400).json({ error: `Session <LaTex>${sessionId} is not connected.` });
+        return res.status(400).json({ error: `Session ${sessionId} is not connected.` });
     }
 
     try {
-        const jid = number.includes("@s.whatsapp.net") ? number : `$</LaTex>{number}@s.whatsapp.net`;
+        const jid = number.includes("@s.whatsapp.net") ? number : `${number}@s.whatsapp.net`;
         await session.sock.sendMessage(jid, { text: message });
         res.json({ success: true, sessionId });
     } catch (err) {
-        console.error(`Error sending message for session <LaTex>${sessionId}:`, err);
+        console.error(`Error sending message for session ${sessionId}:`, err);
         res.status(500).json({ error: err.message });
     }
 });
 
+// تشغيل السيرفر من خلال الـ http server اللي مربوط بيه الـ socket.io
 server.listen(port, () => {
-    console.log(`Server is running on port $</LaTex>{port}`);
+    console.log(`Server is running on port ${port}`);
 });
