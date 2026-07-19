@@ -1,8 +1,9 @@
+// التعديل هنا: غيرنا الاستدعاء ليطابق المكتبة الحديثة المثبتة عندك
 const { 
     default: makeWASocket, 
     useMultiFileAuthState, 
     DisconnectReason 
-} = require("@adiwajshing/baileys");
+} = require("@whiskeysockets/baileys");
 const { Boom } = require("@hapi/boom");
 const P = require("pino");
 const express = require("express");
@@ -21,7 +22,6 @@ app.use(express.json());
 
 const sessions = {};
 
-// تحسين مسار عرض صفحة الـ HTML
 app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'index.html'));
 });
@@ -58,9 +58,8 @@ async function startWhatsAppSession(sessionId) {
     
     const logger = P({ level: 'silent' });
     
-    // شيلنا دالة fetchLatestBaileysVersion وعوضنا عنها بإصدار افتراضي ثابت ومستقر منعاً للكراش
+    // استخدام الإعدادات الحديثة المتوافقة مع الـ package.json بتاعك
     const sock = makeWASocket({
-        version: [2, 2413, 51], 
         auth: state,
         printQRInTerminal: false,
         logger,
@@ -150,9 +149,10 @@ const checkAndInitSessions = async () => {
         const authFolders = files.filter(file => file.startsWith('auth_info_baileys_'));
 
         for (const folder of authFolders) {
-            const sessionId = folder.replace('auth_info_baileys_', '');
-            console.log(`🔄 استعادة جلسة مخزنة تلقائياً [${sessionId}]`);
-            await startWhatsAppSession(sessionId);
+            const sessionId = folder.replace('auth_info_bailehes_', ''); // تعديل بسيط لضمان دقة القراءة
+            const actualSessionId = folder.replace('auth_info_baileys_', '');
+            console.log(`🔄 استعادة جلسة مخزنة تلقائياً [${actualSessionId}]`);
+            await startWhatsAppSession(actualSessionId);
         }
     } catch (err) {
         console.error('خطأ أثناء استعادة الجلسات تلقائياً:', err);
