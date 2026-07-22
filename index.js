@@ -154,6 +154,38 @@ app.post('/send-message', async (req, res) => {
     }
 });
 
+// وظيفة إرسال الحملات (رسائل جماعية)
+app.post('/send-campaign', async (req, res) => {
+    const { sessionId, numbers, message, delay = 5000 } = req.body;
+
+    if (!sessionId || !numbers || !Array.isArray(numbers) || !message) {
+        return res.status(400).json({ error: 'Session ID, numbers array, and message are required' });
+    }
+
+    const session = sessions[sessionId];
+    if (!session || !session.sock || session.status !== 'connected') {
+        return res.status(400).json({ error: `Session ${sessionId} is not connected.` });
+    }
+
+    res.json({ success: true, message: 'Campaign started', total: numbers.length });
+
+    // تشغيل الحملة في الخلفية
+    for (const number of numbers) {
+        try {
+            let cleanNumber = number.toString().replace(/[^0-9]/g, '');
+            const jid = cleanNumber.includes('@s.whatsapp.net') ? cleanNumber : `${cleanNumber}@s.whatsapp.net`;
+            
+            await session.sock.sendMessage(jid, { text: message });
+            console.log(`✅ Campaign: Message sent to ${cleanNumber}`);
+            
+            // انتظر قبل إرسال الرسالة التالية
+            await new Promise(resolve => setTimeout(resolve, delay));
+        } catch (err) {
+            console.error(`❌ Campaign: Error sending to ${number}:`, err.message);
+        }
+    }
+});
+
 const checkAndInitSessions = async () => {
     try {
         const files = fs.readdirSync(__dirname);
