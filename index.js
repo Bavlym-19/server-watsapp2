@@ -48,8 +48,19 @@ app.get('/session/:sessionId/status', (req, res) => {
     if (sessions[sessionId]) {
         res.json({ status: sessions[sessionId].status, user: sessions[sessionId].sock?.user });
     } else {
-        res.status(404).json({ error: 'Session not found.' });
+        res.json({ status: 'offline' });
     }
+});
+
+app.get('/sessions', (req, res) => {
+    const sessionStatus = {};
+    for (const id in sessions) {
+        sessionStatus[id] = {
+            status: sessions[id].status,
+            user: sessions[id].sock?.user
+        };
+    }
+    res.json(sessionStatus);
 });
 
 async function startWhatsAppSession(sessionId) {
@@ -149,7 +160,6 @@ const checkAndInitSessions = async () => {
         const authFolders = files.filter(file => file.startsWith('auth_info_baileys_'));
 
         for (const folder of authFolders) {
-            const sessionId = folder.replace('auth_info_bailehes_', ''); // تعديل بسيط لضمان دقة القراءة
             const actualSessionId = folder.replace('auth_info_baileys_', '');
             console.log(`🔄 استعادة جلسة مخزنة تلقائياً [${actualSessionId}]`);
             await startWhatsAppSession(actualSessionId);
