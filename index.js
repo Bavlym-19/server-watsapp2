@@ -1,7 +1,8 @@
 const { 
     default: makeWASocket, 
     useMultiFileAuthState, 
-    DisconnectReason 
+    DisconnectReason,
+    fetchLatestBaileysVersion // <-- إضافة جلب أحدث إصدار
 } = require("@whiskeysockets/baileys");
 const { Boom } = require("@hapi/boom");
 const P = require("pino");
@@ -64,14 +65,19 @@ async function startWhatsAppSession(sessionId = 'default') {
     const authPath = `auth_info_baileys_${sessionId}`;
     const { state, saveCreds } = await useMultiFileAuthState(authPath);
     
+    // جلب أحدث إصدار متوافق من واتساب ويب حل لمشكلة 405
+    const { version, isLatest } = await fetchLatestBaileysVersion();
+    console.log(`ℹ️ تشغيل واتساب بـ Version: ${version.join('.')} (Is Latest: ${isLatest})`);
+
     const logger = P({ level: 'silent' });
     
-    // تم تفعيل printQRInTerminal لتوليد وطباعة الـ QR في الـ Terminal فوراً
     const sock = makeWASocket({
+        version,
         auth: state,
         printQRInTerminal: true, 
         logger,
-        browser: ['Chrome', 'Ubuntu', '1.0']
+        browser: ['Mac OS', 'Chrome', '120.0.0.0'], // التعديل هنا مهم لمنع حظر Render
+        syncFullHistory: false
     });
 
     sessions[sessionId] = { sock, status: 'connecting' };
@@ -81,7 +87,7 @@ async function startWhatsAppSession(sessionId = 'default') {
         
         // في حالة وجود QR جديد (الجلسة غير مربوطة)
         if (qr) {
-            console.log(`\n📲 [${sessionId}] جلسة غير مربوطة. تم توليد QR code جديد، يمكنك مسحه من الـ Terminal أو من صفحة الويب.`);
+            console.log(`\n📲 [${sessionId}] تم توليد QR code جديد! يمكنك مسحه الآن.`);
             const qrImage = await qrcode.toDataURL(qr);
             io.emit('qr', { sessionId, qrImage, qrRaw: qr });
             if (sessions[sessionId]) sessions[sessionId].status = 'qr_received';
@@ -91,7 +97,8 @@ async function startWhatsAppSession(sessionId = 'default') {
             let reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
             console.log(`❌ الاتصال مقفول لجلسة [${sessionId}]. السبب: ${reason}`);
             
-            if (reason === DisconnectReason.loggedOut || reason === 401 || reason === 403) {
+            // التعامل مع الأخطاء وتجنب الـ Infinite Loop على Render
+            if (reason === DisconnectReason.loggedOut || reason === 401 || reason === 403 || reason === 405) {
                 console.log(`🧹 مسح ملفات الجلسة المنتهية [${sessionId}]...`);
                 if (fs.existsSync(authPath)) {
                     fs.rmSync(authPath, { recursive: true, force: true });
@@ -99,8 +106,8 @@ async function startWhatsAppSession(sessionId = 'default') {
                 delete sessions[sessionId];
                 io.emit('status', { sessionId, status: 'logged_out' });
                 
-                // أعِد المحاولة فوراً لتوليد QR جديد بعد تسجيل الخروج
-                setTimeout(() => startWhatsAppSession(sessionId), 2000);
+                // إعادة المحاولة بعد 5 ثوانٍ
+                setTimeout(() => startWhatsAppSession(sessionId), 5000);
             } else {
                 if (sessions[sessionId]) sessions[sessionId].status = 'reconnecting';
                 io.emit('status', { sessionId, status: 'reconnecting' });
@@ -201,7 +208,6 @@ const checkAndInitSessions = async () => {
                 await startWhatsAppSession(actualSessionId);
             }
         } else {
-            // لو مفيش أي جلسات قديمة، ابدأ الجلسة الافتراضية default لتوليد الـ QR فوراً
             console.log(`🚀 البدء التلقائي للجلسة الافتراضية [default]...`);
             await startWhatsAppSession('default');
         }
