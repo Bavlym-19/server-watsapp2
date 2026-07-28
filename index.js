@@ -1,4 +1,3 @@
-// التعديل هنا: غيرنا الاستدعاء ليطابق المكتبة الحديثة المثبتة عندك
 const { 
     default: makeWASocket, 
     useMultiFileAuthState, 
@@ -26,17 +25,15 @@ app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'index.html'));
 });
 
+// API لبدء جلسة جديدة يدوياً إن أردت
 app.post('/session/start', async (req, res) => {
-    const { sessionId } = req.body;
-    if (!sessionId) {
-        return res.status(400).json({ error: 'Session ID is required.' });
-    }
-    if (sessions[sessionId] && sessions[sessionId].sock && sessions[sessionId].sock.user) {
-        return res.status(200).json({ status: 'already_connected', user: sessions[sessionId].sock.user });
+    const { sessionId = 'default' } = req.body;
+    if (sessions[sessionId] && sessions[sessionId].status === 'connected') {
+        return res.status(200).json({ status: 'already_connected', user: sessions[sessionId].sock?.user });
     }
     try {
         await startWhatsAppSession(sessionId);
-        res.json({ success: true, message: `Session ${sessionId} started.` });
+        res.json({ success: true, message: `Session ${sessionId} check/start initiated.` });
     } catch (error) {
         console.error(`Error starting session ${sessionId}:`, error);
         res.status(500).json({ success: false, error: error.message });
@@ -63,16 +60,16 @@ app.get('/sessions', (req, res) => {
     res.json(sessionStatus);
 });
 
-async function startWhatsAppSession(sessionId) {
+async function startWhatsAppSession(sessionId = 'default') {
     const authPath = `auth_info_baileys_${sessionId}`;
     const { state, saveCreds } = await useMultiFileAuthState(authPath);
     
     const logger = P({ level: 'silent' });
     
-    // استخدام الإعدادات الحديثة المتوافقة مع الـ package.json بتاعك
+    // تم تفعيل printQRInTerminal لتوليد وطباعة الـ QR في الـ Terminal فوراً
     const sock = makeWASocket({
         auth: state,
-        printQRInTerminal: false,
+        printQRInTerminal: true, 
         logger,
         browser: ['Chrome', 'Ubuntu', '1.0']
     });
@@ -82,9 +79,11 @@ async function startWhatsAppSession(sessionId) {
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
         
+        // في حالة وجود QR جديد (الجلسة غير مربوطة)
         if (qr) {
+            console.log(`\n📲 [${sessionId}] جلسة غير مربوطة. تم توليد QR code جديد، يمكنك مسحه من الـ Terminal أو من صفحة الويب.`);
             const qrImage = await qrcode.toDataURL(qr);
-            io.emit('qr', { sessionId, qrImage });
+            io.emit('qr', { sessionId, qrImage, qrRaw: qr });
             if (sessions[sessionId]) sessions[sessionId].status = 'qr_received';
         }
 
@@ -93,11 +92,15 @@ async function startWhatsAppSession(sessionId) {
             console.log(`❌ الاتصال مقفول لجلسة [${sessionId}]. السبب: ${reason}`);
             
             if (reason === DisconnectReason.loggedOut || reason === 401 || reason === 403) {
+                console.log(`🧹 مسح ملفات الجلسة المنتهية [${sessionId}]...`);
                 if (fs.existsSync(authPath)) {
                     fs.rmSync(authPath, { recursive: true, force: true });
                 }
                 delete sessions[sessionId];
                 io.emit('status', { sessionId, status: 'logged_out' });
+                
+                // أعِد المحاولة فوراً لتوليد QR جديد بعد تسجيل الخروج
+                setTimeout(() => startWhatsAppSession(sessionId), 2000);
             } else {
                 if (sessions[sessionId]) sessions[sessionId].status = 'reconnecting';
                 io.emit('status', { sessionId, status: 'reconnecting' });
@@ -106,7 +109,9 @@ async function startWhatsAppSession(sessionId) {
                 }, 5000);
             }
         } else if (connection === 'open') {
-            console.log(`✅ الجلسة متصلة وجاهزة: [${sessionId}]`);
+            console.log(`\n✅ الجلسة متصلة وجاهزة! [${sessionId}]`);
+            console.log(`👤 الحساب: ${sock.user?.name || sock.user?.id}`);
+            
             if (sessions[sessionId]) {
                 sessions[sessionId].status = 'connected';
                 sessions[sessionId].sock = sock;
@@ -131,10 +136,10 @@ async function startWhatsAppSession(sessionId) {
 }
 
 app.post('/send-message', async (req, res) => {
-    const { sessionId, number, message } = req.body;
+    const { sessionId = 'default', number, message } = req.body;
 
-    if (!sessionId || !number || !message) {
-        return res.status(400).json({ error: 'Session ID, number, and message are required' });
+    if (!number || !message) {
+        return res.status(400).json({ error: 'Number and message are required' });
     }
 
     const session = sessions[sessionId];
@@ -154,12 +159,11 @@ app.post('/send-message', async (req, res) => {
     }
 });
 
-// وظيفة إرسال الحملات (رسائل جماعية)
 app.post('/send-campaign', async (req, res) => {
-    const { sessionId, numbers, message, delay = 5000 } = req.body;
+    const { sessionId = 'default', numbers, message, delay = 5000 } = req.body;
 
-    if (!sessionId || !numbers || !Array.isArray(numbers) || !message) {
-        return res.status(400).json({ error: 'Session ID, numbers array, and message are required' });
+    if (!numbers || !Array.isArray(numbers) || !message) {
+        return res.status(400).json({ error: 'Numbers array and message are required' });
     }
 
     const session = sessions[sessionId];
@@ -169,7 +173,6 @@ app.post('/send-campaign', async (req, res) => {
 
     res.json({ success: true, message: 'Campaign started', total: numbers.length });
 
-    // تشغيل الحملة في الخلفية
     for (const number of numbers) {
         try {
             let cleanNumber = number.toString().replace(/[^0-9]/g, '');
@@ -178,7 +181,6 @@ app.post('/send-campaign', async (req, res) => {
             await session.sock.sendMessage(jid, { text: message });
             console.log(`✅ Campaign: Message sent to ${cleanNumber}`);
             
-            // انتظر قبل إرسال الرسالة التالية
             await new Promise(resolve => setTimeout(resolve, delay));
         } catch (err) {
             console.error(`❌ Campaign: Error sending to ${number}:`, err.message);
@@ -186,23 +188,29 @@ app.post('/send-campaign', async (req, res) => {
     }
 });
 
+// استعادة الجلسات المخزنة أو البدء بجلسة default تلقائياً
 const checkAndInitSessions = async () => {
     try {
         const files = fs.readdirSync(__dirname);
         const authFolders = files.filter(file => file.startsWith('auth_info_baileys_'));
 
-        for (const folder of authFolders) {
-            const actualSessionId = folder.replace('auth_info_baileys_', '');
-            console.log(`🔄 استعادة جلسة مخزنة تلقائياً [${actualSessionId}]`);
-            await startWhatsAppSession(actualSessionId);
+        if (authFolders.length > 0) {
+            for (const folder of authFolders) {
+                const actualSessionId = folder.replace('auth_info_baileys_', '');
+                console.log(`🔄 جاري استعادة الجلسة [${actualSessionId}]...`);
+                await startWhatsAppSession(actualSessionId);
+            }
+        } else {
+            // لو مفيش أي جلسات قديمة، ابدأ الجلسة الافتراضية default لتوليد الـ QR فوراً
+            console.log(`🚀 البدء التلقائي للجلسة الافتراضية [default]...`);
+            await startWhatsAppSession('default');
         }
     } catch (err) {
-        console.error('خطأ أثناء استعادة الجلسات تلقائياً:', err);
+        console.error('خطأ أثناء استعادة الجلسات:', err);
     }
 };
 
-checkAndInitSessions();
-
 server.listen(port, () => {
-    console.log(`Server is running on port ${port}`);
+    console.log(` Server is running on port ${port}`);
+    checkAndInitSessions();
 });
