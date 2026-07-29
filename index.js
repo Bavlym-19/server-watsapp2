@@ -26,6 +26,7 @@ app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'index.html'));
 });
 
+// 🟢 بدء أو فحص الجلسة
 app.post('/session/start', async (req, res) => {
     const { sessionId = 'default' } = req.body;
     if (sessions[sessionId] && sessions[sessionId].status === 'connected') {
@@ -40,6 +41,7 @@ app.post('/session/start', async (req, res) => {
     }
 });
 
+// 🟢 معرفة حالة جلسة واحدة
 app.get('/session/:sessionId/status', (req, res) => {
     const { sessionId } = req.params;
     if (sessions[sessionId]) {
@@ -49,6 +51,7 @@ app.get('/session/:sessionId/status', (req, res) => {
     }
 });
 
+// 🟢 معرفة حالة كل الجلسات
 app.get('/sessions', (req, res) => {
     const sessionStatus = {};
     for (const id in sessions) {
@@ -61,7 +64,7 @@ app.get('/sessions', (req, res) => {
 });
 
 async function startWhatsAppSession(sessionId = 'default') {
-    // 🛠️ 1. إغلاق السوكيت القديم إن وجد لمنع التضارب وقطع الاتصال
+    // إغلاق السوكيت القديم إن وجد لمنع التضارب وقطع الاتصال
     if (sessions[sessionId] && sessions[sessionId].sock) {
         try {
             sessions[sessionId].sock.ev.removeAllListeners();
@@ -87,7 +90,7 @@ async function startWhatsAppSession(sessionId = 'default') {
         browser: ['Mac OS', 'Chrome', '120.0.0.0'],
         syncFullHistory: false,
         connectTimeoutMs: 60000,
-        keepAliveIntervalMs: 25000 // 🛠️ 2. الحفاظ على الاتصال حي على Replit
+        keepAliveIntervalMs: 25000
     });
 
     sessions[sessionId] = { sock, status: 'connecting' };
@@ -152,18 +155,41 @@ async function startWhatsAppSession(sessionId = 'default') {
 async function getSanitizedJid(sock, number) {
     let cleanNumber = number.toString().replace(/[^0-9]/g, '');
     
-    // جلب الـ JID الفعلي من سيرفرات واتساب مباشرة لضمان الصحة
+    // جلب الـ JID الفعلي من سيرفرات واتساب مباشرة
     const [result] = await sock.onWhatsApp(cleanNumber);
     if (result && result.exists) {
         return result.jid;
     }
     
-    // fallback في حال لم يجد النتيجة مباشرة
     return `${cleanNumber}@s.whatsapp.net`;
 }
 
+// 🟢 API لتحديث حالة "يكتب الآن" أو "تسجيل صوتي" بشكل مستقل
+app.post('/presence', async (req, res) => {
+    const { sessionId = 'default', number, presence = 'composing' } = req.body;
+
+    if (!number) {
+        return res.status(400).json({ error: 'Phone number is required' });
+    }
+
+    const session = sessions[sessionId];
+    if (!session || !session.sock || session.status !== 'connected') {
+        return res.status(400).json({ error: `Session ${sessionId} is not connected.` });
+    }
+
+    try {
+        const jid = await getSanitizedJid(session.sock, number);
+        await session.sock.sendPresenceUpdate(presence, jid);
+        res.json({ success: true, sessionId, jid, presence });
+    } catch (err) {
+        console.error(`Error updating presence:`, err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// 🟢 إرسال رسالة فردية (مع دعم خيار التظاهر بالحركة البشرية "يكتب الآن")
 app.post('/send-message', async (req, res) => {
-    const { sessionId = 'default', number, message } = req.body;
+    const { sessionId = 'default', number, message, showTyping = true } = req.body;
 
     if (!number || !message) {
         return res.status(400).json({ error: 'Number and message are required' });
@@ -176,6 +202,14 @@ app.post('/send-message', async (req, res) => {
 
     try {
         const jid = await getSanitizedJid(session.sock, number);
+
+        if (showTyping) {
+            // إرسال إشارة "يكتب الآن" والانتظار ثواني بسيطة
+            await session.sock.sendPresenceUpdate('composing', jid);
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            await session.sock.sendPresenceUpdate('paused', jid);
+        }
+
         await session.sock.sendMessage(jid, { text: message });
         res.json({ success: true, sessionId, sentTo: jid });
     } catch (err) {
@@ -184,6 +218,7 @@ app.post('/send-message', async (req, res) => {
     }
 });
 
+// 🟢 إرسال الحملات الإعلانية
 app.post('/send-campaign', async (req, res) => {
     const { sessionId = 'default', numbers, message, delay = 5000 } = req.body;
 
@@ -201,6 +236,12 @@ app.post('/send-campaign', async (req, res) => {
     for (const number of numbers) {
         try {
             const jid = await getSanitizedJid(session.sock, number);
+            
+            // إظهار يكتب الآن قصيرة أثناء الحملات لتجنب الحظر
+            await session.sock.sendPresenceUpdate('composing', jid);
+            await new Promise(resolve => setTimeout(resolve, 1500));
+            await session.sock.sendPresenceUpdate('paused', jid);
+
             await session.sock.sendMessage(jid, { text: message });
             console.log(`✅ Campaign: Message sent to ${jid}`);
             
@@ -211,6 +252,7 @@ app.post('/send-campaign', async (req, res) => {
     }
 });
 
+// 🟢 استعادة الجلسات تلقائياً عند التشغيل
 const checkAndInitSessions = async () => {
     try {
         const files = fs.readdirSync(__dirname);
