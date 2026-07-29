@@ -2,7 +2,7 @@ const {
     default: makeWASocket, 
     useMultiFileAuthState, 
     DisconnectReason,
-    fetchLatestBaileysVersion // <-- إضافة جلب أحدث إصدار
+    fetchLatestBaileysVersion 
 } = require("@whiskeysockets/baileys");
 const { Boom } = require("@hapi/boom");
 const P = require("pino");
@@ -26,7 +26,6 @@ app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'index.html'));
 });
 
-// API لبدء جلسة جديدة يدوياً إن أردت
 app.post('/session/start', async (req, res) => {
     const { sessionId = 'default' } = req.body;
     if (sessions[sessionId] && sessions[sessionId].status === 'connected') {
@@ -62,10 +61,19 @@ app.get('/sessions', (req, res) => {
 });
 
 async function startWhatsAppSession(sessionId = 'default') {
+    // 🛠️ 1. إغلاق السوكيت القديم إن وجد لمنع التضارب وقطع الاتصال
+    if (sessions[sessionId] && sessions[sessionId].sock) {
+        try {
+            sessions[sessionId].sock.ev.removeAllListeners();
+            sessions[sessionId].sock.ws.close();
+        } catch (e) {
+            // ignore
+        }
+    }
+
     const authPath = `auth_info_baileys_${sessionId}`;
     const { state, saveCreds } = await useMultiFileAuthState(authPath);
     
-    // جلب أحدث إصدار متوافق من واتساب ويب حل لمشكلة 405
     const { version, isLatest } = await fetchLatestBaileysVersion();
     console.log(`ℹ️ تشغيل واتساب بـ Version: ${version.join('.')} (Is Latest: ${isLatest})`);
 
@@ -76,8 +84,10 @@ async function startWhatsAppSession(sessionId = 'default') {
         auth: state,
         printQRInTerminal: true, 
         logger,
-        browser: ['Mac OS', 'Chrome', '120.0.0.0'], // التعديل هنا مهم لمنع حظر Render
-        syncFullHistory: false
+        browser: ['Mac OS', 'Chrome', '120.0.0.0'],
+        syncFullHistory: false,
+        connectTimeoutMs: 60000,
+        keepAliveIntervalMs: 25000 // 🛠️ 2. الحفاظ على الاتصال حي على Replit
     });
 
     sessions[sessionId] = { sock, status: 'connecting' };
@@ -85,9 +95,8 @@ async function startWhatsAppSession(sessionId = 'default') {
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
         
-        // في حالة وجود QR جديد (الجلسة غير مربوطة)
         if (qr) {
-            console.log(`\n📲 [${sessionId}] تم توليد QR code جديد! يمكنك مسحه الآن.`);
+            console.log(`\n📲 [${sessionId}] تم توليد QR code جديد!`);
             const qrImage = await qrcode.toDataURL(qr);
             io.emit('qr', { sessionId, qrImage, qrRaw: qr });
             if (sessions[sessionId]) sessions[sessionId].status = 'qr_received';
@@ -97,7 +106,6 @@ async function startWhatsAppSession(sessionId = 'default') {
             let reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
             console.log(`❌ الاتصال مقفول لجلسة [${sessionId}]. السبب: ${reason}`);
             
-            // التعامل مع الأخطاء وتجنب الـ Infinite Loop على Render
             if (reason === DisconnectReason.loggedOut || reason === 401 || reason === 403 || reason === 405) {
                 console.log(`🧹 مسح ملفات الجلسة المنتهية [${sessionId}]...`);
                 if (fs.existsSync(authPath)) {
@@ -106,7 +114,6 @@ async function startWhatsAppSession(sessionId = 'default') {
                 delete sessions[sessionId];
                 io.emit('status', { sessionId, status: 'logged_out' });
                 
-                // إعادة المحاولة بعد 5 ثوانٍ
                 setTimeout(() => startWhatsAppSession(sessionId), 5000);
             } else {
                 if (sessions[sessionId]) sessions[sessionId].status = 'reconnecting';
@@ -117,7 +124,6 @@ async function startWhatsAppSession(sessionId = 'default') {
             }
         } else if (connection === 'open') {
             console.log(`\n✅ الجلسة متصلة وجاهزة! [${sessionId}]`);
-            console.log(`👤 الحساب: ${sock.user?.name || sock.user?.id}`);
             
             if (sessions[sessionId]) {
                 sessions[sessionId].status = 'connected';
@@ -142,6 +148,20 @@ async function startWhatsAppSession(sessionId = 'default') {
     return sock;
 }
 
+// 🛠️ دالة مساعدة لتحويل وتأكيد رقم الواتساب (JID)
+async function getSanitizedJid(sock, number) {
+    let cleanNumber = number.toString().replace(/[^0-9]/g, '');
+    
+    // جلب الـ JID الفعلي من سيرفرات واتساب مباشرة لضمان الصحة
+    const [result] = await sock.onWhatsApp(cleanNumber);
+    if (result && result.exists) {
+        return result.jid;
+    }
+    
+    // fallback في حال لم يجد النتيجة مباشرة
+    return `${cleanNumber}@s.whatsapp.net`;
+}
+
 app.post('/send-message', async (req, res) => {
     const { sessionId = 'default', number, message } = req.body;
 
@@ -155,14 +175,12 @@ app.post('/send-message', async (req, res) => {
     }
 
     try {
-        let cleanNumber = number.replace(/[^0-9]/g, '');
-        const jid = cleanNumber.includes('@s.whatsapp.net') ? cleanNumber : `${cleanNumber}@s.whatsapp.net`;
-        
+        const jid = await getSanitizedJid(session.sock, number);
         await session.sock.sendMessage(jid, { text: message });
-        res.json({ success: true, sessionId });
+        res.json({ success: true, sessionId, sentTo: jid });
     } catch (err) {
         console.error(`Error sending message:`, err);
-        res.status(500).json({ error: err.message });
+        res.status(500).json({ error: err.message || 'Connection Closed' });
     }
 });
 
@@ -182,11 +200,9 @@ app.post('/send-campaign', async (req, res) => {
 
     for (const number of numbers) {
         try {
-            let cleanNumber = number.toString().replace(/[^0-9]/g, '');
-            const jid = cleanNumber.includes('@s.whatsapp.net') ? cleanNumber : `${cleanNumber}@s.whatsapp.net`;
-            
+            const jid = await getSanitizedJid(session.sock, number);
             await session.sock.sendMessage(jid, { text: message });
-            console.log(`✅ Campaign: Message sent to ${cleanNumber}`);
+            console.log(`✅ Campaign: Message sent to ${jid}`);
             
             await new Promise(resolve => setTimeout(resolve, delay));
         } catch (err) {
@@ -195,7 +211,6 @@ app.post('/send-campaign', async (req, res) => {
     }
 });
 
-// استعادة الجلسات المخزنة أو البدء بجلسة default تلقائياً
 const checkAndInitSessions = async () => {
     try {
         const files = fs.readdirSync(__dirname);
@@ -217,6 +232,6 @@ const checkAndInitSessions = async () => {
 };
 
 server.listen(port, () => {
-    console.log(` Server is running on port ${port}`);
+    console.log(`🚀 Server is running on port ${port}`);
     checkAndInitSessions();
 });
