@@ -64,13 +64,13 @@ app.get('/sessions', (req, res) => {
 });
 
 async function startWhatsAppSession(sessionId = 'default') {
-    // إغلاق السوكيت القديم إن وجد لمنع التضارب وقطع الاتصال
+    // إغلاق السوكيت القديم إن وجد لمنع التضارب
     if (sessions[sessionId] && sessions[sessionId].sock) {
         try {
             sessions[sessionId].sock.ev.removeAllListeners();
-            sessions[sessionId].sock.ws.close();
+            sessions[sessionId].sock.ws?.close();
         } catch (e) {
-            // ignore
+            // ignore cleanup errors
         }
     }
 
@@ -100,9 +100,13 @@ async function startWhatsAppSession(sessionId = 'default') {
         
         if (qr) {
             console.log(`\n📲 [${sessionId}] تم توليد QR code جديد!`);
-            const qrImage = await qrcode.toDataURL(qr);
-            io.emit('qr', { sessionId, qrImage, qrRaw: qr });
-            if (sessions[sessionId]) sessions[sessionId].status = 'qr_received';
+            try {
+                const qrImage = await qrcode.toDataURL(qr);
+                io.emit('qr', { sessionId, qrImage, qrRaw: qr });
+                if (sessions[sessionId]) sessions[sessionId].status = 'qr_received';
+            } catch (err) {
+                console.error("Error generating QR:", err);
+            }
         }
 
         if (connection === 'close') {
@@ -155,16 +159,19 @@ async function startWhatsAppSession(sessionId = 'default') {
 async function getSanitizedJid(sock, number) {
     let cleanNumber = number.toString().replace(/[^0-9]/g, '');
     
-    // جلب الـ JID الفعلي من سيرفرات واتساب مباشرة
-    const [result] = await sock.onWhatsApp(cleanNumber);
-    if (result && result.exists) {
-        return result.jid;
+    try {
+        const [result] = await sock.onWhatsApp(cleanNumber);
+        if (result && result.exists) {
+            return result.jid;
+        }
+    } catch (e) {
+        console.warn(`onWhatsApp check failed for ${cleanNumber}, using fallback format.`);
     }
     
     return `${cleanNumber}@s.whatsapp.net`;
 }
 
-// 🟢 API لتحديث حالة "يكتب الآن" أو "تسجيل صوتي" بشكل مستقل
+// 🟢 API لتحديث حالة "يكتب الآن" أو "تسجيل صوتي"
 app.post('/presence', async (req, res) => {
     const { sessionId = 'default', number, presence = 'composing' } = req.body;
 
@@ -187,7 +194,7 @@ app.post('/presence', async (req, res) => {
     }
 });
 
-// 🟢 إرسال رسالة فردية (مع دعم خيار التظاهر بالحركة البشرية "يكتب الآن")
+// 🟢 إرسال رسالة فردية
 app.post('/send-message', async (req, res) => {
     const { sessionId = 'default', number, message, showTyping = true } = req.body;
 
@@ -204,10 +211,13 @@ app.post('/send-message', async (req, res) => {
         const jid = await getSanitizedJid(session.sock, number);
 
         if (showTyping) {
-            // إرسال إشارة "يكتب الآن" والانتظار ثواني بسيطة
-            await session.sock.sendPresenceUpdate('composing', jid);
-            await new Promise(resolve => setTimeout(resolve, 2000));
-            await session.sock.sendPresenceUpdate('paused', jid);
+            try {
+                await session.sock.sendPresenceUpdate('composing', jid);
+                await new Promise(resolve => setTimeout(resolve, 2000));
+                await session.sock.sendPresenceUpdate('paused', jid);
+            } catch (pErr) {
+                console.warn("Typing presence skipped due to minor error:", pErr.message);
+            }
         }
 
         await session.sock.sendMessage(jid, { text: message });
@@ -237,10 +247,13 @@ app.post('/send-campaign', async (req, res) => {
         try {
             const jid = await getSanitizedJid(session.sock, number);
             
-            // إظهار يكتب الآن قصيرة أثناء الحملات لتجنب الحظر
-            await session.sock.sendPresenceUpdate('composing', jid);
-            await new Promise(resolve => setTimeout(resolve, 1500));
-            await session.sock.sendPresenceUpdate('paused', jid);
+            try {
+                await session.sock.sendPresenceUpdate('composing', jid);
+                await new Promise(resolve => setTimeout(resolve, 1500));
+                await session.sock.sendPresenceUpdate('paused', jid);
+            } catch (e) {
+                // Ignore presence errors in campaign loop
+            }
 
             await session.sock.sendMessage(jid, { text: message });
             console.log(`✅ Campaign: Message sent to ${jid}`);
