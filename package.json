@@ -9,15 +9,14 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "",
+  "description": "WhatsApp Baileys Server",
   "dependencies": {
-    "@whiskeysockets/baileys": "^7.0.0-rc13",
+    "@google/genai": "^0.1.1",
     "@hapi/boom": "^10.0.1",
-    "@google/genai": "latest",
-    "baileys": "^7.0.0-rc13",
-    "express": "^5.2.1",
-    "pino": "^10.3.1",
+    "@whiskeysockets/baileys": "^6.7.12",
+    "express": "^4.21.2",
+    "pino": "^9.5.0",
     "qrcode": "^1.5.4",
-    "socket.io": "^4.8.3"
+    "socket.io": "^4.8.1"
   }
 }
