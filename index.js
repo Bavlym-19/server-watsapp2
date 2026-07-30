@@ -111,7 +111,7 @@ async function startWhatsAppSession(sessionId = 'default') {
         auth: state,
         printQRInTerminal: true, 
         logger,
-        browser: ['Ubuntu', 'Chrome', '20.0.04'], // 🔴 رجعنا البصمة ضروري جداً عشان واتساب ميقفلش الجلسة أول ما نبعت
+        browser: ['Ubuntu', 'Chrome', '20.0.04'], // 🔴 البصمة عشان واتساب ميقفلش الجلسة
         syncFullHistory: false,
         connectTimeoutMs: 60000,
         defaultQueryTimeoutMs: 60000,
@@ -182,11 +182,25 @@ function getSanitizedJid(number) {
     return `${cleanNumber}@s.whatsapp.net`;
 }
 
-// 🎭 محاكاة سريعة للكتابة
-async function simulateHumanTyping(sock, jid) {
+// 🎭 محاكاة سريعة وواقعية للكتابة تعتمد على طول الرسالة
+async function simulateHumanTyping(sock, jid, message = "") {
     try {
+        // كل حرف بياخد تقريباً 150 مللي ثانية، بحد أدنى 4 ثواني وحد أقصى 25 ثانية
+        let typeDuration = Math.max(4000, Math.min(25000, message.length * 150));
+        
         await sock.sendPresenceUpdate('composing', jid);
-        await new Promise(r => setTimeout(r, 2000));
+        
+        // لو الرسالة هتاخد أكتر من 10 ثواني كتابة، هنعمل حركة واقعية (يتوقف ثانية في النص بيفكر ويكمل)
+        if (typeDuration > 10000) {
+            await new Promise(r => setTimeout(r, typeDuration / 2));
+            await sock.sendPresenceUpdate('paused', jid); // يوقف كتابة
+            await new Promise(r => setTimeout(r, 1500));  // يستريح ثانية ونص
+            await sock.sendPresenceUpdate('composing', jid); // يرجع يكمل كتابة
+            await new Promise(r => setTimeout(r, typeDuration / 2));
+        } else {
+            await new Promise(r => setTimeout(r, typeDuration));
+        }
+        
         await sock.sendPresenceUpdate('paused', jid);
     } catch (e) {
         console.warn("Typing simulation error:", e.message);
@@ -206,7 +220,7 @@ app.post('/send-message', async (req, res) => {
         session.sendAttempts = (session.sendAttempts || 0) + 1;
         const jid = getSanitizedJid(number);
 
-        if (showTyping) await simulateHumanTyping(session.sock, jid);
+        if (showTyping) await simulateHumanTyping(session.sock, jid, message);
 
         await session.sock.sendMessage(jid, { text: message });
         console.log(`✅ Message sent to ${jid}`);
@@ -245,7 +259,7 @@ app.post('/send-campaign', async (req, res) => {
                 const jid = getSanitizedJid(number);
                 
                 if (showTyping) {
-                    await simulateHumanTyping(sessions[sessionId].sock, jid);
+                    await simulateHumanTyping(sessions[sessionId].sock, jid, message);
                 }
 
                 await sessions[sessionId].sock.sendMessage(jid, { text: message });
