@@ -63,9 +63,22 @@ app.get('/sessions', (req, res) => {
     res.json(sessionStatus);
 });
 
-// 🟢 API فحص صحة الجلسات ونسبة الحظر لـ Replit Agent
+// 🟢 API فحص صحة الجلسات ونسبة الحظر لـ Replit Agent (معدل لمعالجة خطأ غير متصل)
 app.get('/sessions/health', (req, res) => {
-    const healthData = Object.keys(sessions).map(sessionId => {
+    const sessionKeys = Object.keys(sessions);
+
+    // إذا لم تكن هناك جلسات ممررة بعد، يتم إرجاع جلسة افتراضية لمنع توقف Replit Agent
+    if (sessionKeys.length === 0) {
+        return res.json([{
+            sessionId: "default",
+            sendAttempts: 0,
+            confirmedBanEvents: 0,
+            currentStatus: "offline",
+            banSignals: []
+        }]);
+    }
+
+    const healthData = sessionKeys.map(sessionId => {
         const session = sessions[sessionId];
         return {
             sessionId: sessionId,
@@ -106,8 +119,8 @@ async function startWhatsAppSession(sessionId = 'default') {
         browser: ['Mac OS', 'Chrome', '120.0.0.0'],
         syncFullHistory: false,
         connectTimeoutMs: 60000,
-        defaultQueryTimeoutMs: 60000, // 👈 لمنع المهلة (Timeouts) أثناء الإرسال
-        keepAliveIntervalMs: 10000    // 👈 تبديل لـ 10 ثوانٍ للحفاظ على حيوية الـ WebSocket
+        defaultQueryTimeoutMs: 60000, // لمنع المهلة (Timeouts) أثناء الإرسال
+        keepAliveIntervalMs: 10000    // الحفاظ على حيوية الـ WebSocket
     });
 
     // الحفاظ على الإحصائيات السابقة إن وجدت
@@ -231,7 +244,7 @@ app.post('/presence', async (req, res) => {
     }
 });
 
-// 🟢 إرسال رسالة فردية (مع دعم إعادة الاتصال التلقائي لو السوكيت مقفول)
+// 🟢 إرسال رسالة فردية (مع دعم إعادة الاتصال التلقائي)
 app.post('/send-message', async (req, res) => {
     const { sessionId = 'default', number, message, showTyping = true } = req.body;
 
@@ -241,7 +254,6 @@ app.post('/send-message', async (req, res) => {
 
     let session = sessions[sessionId];
 
-    // 🔴 إذا كانت الجلسة غير متصلة، قم بمحاولة الاتصال مجدداً
     if (!session || !session.sock || session.status !== 'connected') {
         console.log(`⚠️ الجلسة ${sessionId} غير متصلة أثناء محاولة الإرسال، جاري إعادة الاتصال...`);
         startWhatsAppSession(sessionId);
@@ -267,7 +279,6 @@ app.post('/send-message', async (req, res) => {
     } catch (err) {
         console.error(`❌ Error sending message:`, err.message);
         
-        // إعادة تهيئة الجلسة لو السوكيت حصل فيه انقطاع مفاجئ
         if (sessions[sessionId]) sessions[sessionId].status = 'disconnected';
         startWhatsAppSession(sessionId);
 
