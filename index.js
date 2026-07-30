@@ -63,6 +63,22 @@ app.get('/sessions', (req, res) => {
     res.json(sessionStatus);
 });
 
+// 🟢 API فحص صحة الجلسات ونسبة الحظر لـ Replit Agent
+app.get('/sessions/health', (req, res) => {
+    const healthData = Object.keys(sessions).map(sessionId => {
+        const session = sessions[sessionId];
+        return {
+            sessionId: sessionId,
+            sendAttempts: session.sendAttempts || 0,
+            confirmedBanEvents: session.confirmedBanEvents || 0,
+            currentStatus: session.status || 'offline',
+            banSignals: session.banSignals || []
+        };
+    });
+
+    res.json(healthData);
+});
+
 async function startWhatsAppSession(sessionId = 'default') {
     // إغلاق السوكيت القديم إن وجد لمنع التضارب
     if (sessions[sessionId] && sessions[sessionId].sock) {
@@ -93,7 +109,18 @@ async function startWhatsAppSession(sessionId = 'default') {
         keepAliveIntervalMs: 25000
     });
 
-    sessions[sessionId] = { sock, status: 'connecting' };
+    // الحفاظ على الإحصائيات السابقة إن وجدت
+    const existingSendAttempts = sessions[sessionId]?.sendAttempts || 0;
+    const existingBanEvents = sessions[sessionId]?.confirmedBanEvents || 0;
+    const existingBanSignals = sessions[sessionId]?.banSignals || [];
+
+    sessions[sessionId] = { 
+        sock, 
+        status: 'connecting',
+        sendAttempts: existingSendAttempts,
+        confirmedBanEvents: existingBanEvents,
+        banSignals: existingBanSignals
+    };
 
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
@@ -115,6 +142,15 @@ async function startWhatsAppSession(sessionId = 'default') {
             
             if (reason === DisconnectReason.loggedOut || reason === 401 || reason === 403 || reason === 405) {
                 console.log(`🧹 مسح ملفات الجلسة المنتهية [${sessionId}]...`);
+                
+                if (sessions[sessionId]) {
+                    sessions[sessionId].confirmedBanEvents = (sessions[sessionId].confirmedBanEvents || 0) + 1;
+                    sessions[sessionId].banSignals.push({
+                        time: new Date().toISOString(),
+                        reason: `Logged out or banned (code: ${reason})`
+                    });
+                }
+
                 if (fs.existsSync(authPath)) {
                     fs.rmSync(authPath, { recursive: true, force: true });
                 }
@@ -208,6 +244,7 @@ app.post('/send-message', async (req, res) => {
     }
 
     try {
+        session.sendAttempts = (session.sendAttempts || 0) + 1;
         const jid = await getSanitizedJid(session.sock, number);
 
         if (showTyping) {
@@ -245,6 +282,7 @@ app.post('/send-campaign', async (req, res) => {
 
     for (const number of numbers) {
         try {
+            session.sendAttempts = (session.sendAttempts || 0) + 1;
             const jid = await getSanitizedJid(session.sock, number);
             
             try {
@@ -285,6 +323,18 @@ const checkAndInitSessions = async () => {
         console.error('خطأ أثناء استعادة الجلسات:', err);
     }
 };
+
+// 🟢 منع Render من النوم (Self Ping)
+const RENDER_EXTERNAL_URL = process.env.RENDER_EXTERNAL_URL;
+if (RENDER_EXTERNAL_URL) {
+    setInterval(() => {
+        http.get(RENDER_EXTERNAL_URL, (res) => {
+            console.log(`⏰ Self-ping successful: ${res.statusCode}`);
+        }).on('error', (err) => {
+            console.error('❌ Self-ping error:', err.message);
+        });
+    }, 10 * 60 * 1000);
+}
 
 server.listen(port, () => {
     console.log(`🚀 Server is running on port ${port}`);
