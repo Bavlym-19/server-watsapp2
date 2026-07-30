@@ -63,7 +63,7 @@ app.get('/sessions', (req, res) => {
     res.json(sessionStatus);
 });
 
-// 🟢 API فحص صحة الجلسات ونسبة الخطر التقريبية (لحماية الرقم)
+// 🟢 API فحص صحة الجلسات ونسبة الخطر التقريبية
 app.get('/sessions/health', (req, res) => {
     const sessionKeys = Object.keys(sessions);
 
@@ -83,20 +83,11 @@ app.get('/sessions/health', (req, res) => {
         let sendAttempts = session.sendAttempts || 0;
         let disconnects = session.confirmedBanEvents || 0;
         
-        // حساب تقريبي لنسبة الخطر
         let riskPercentage = 0;
         
-        if (disconnects > 0) {
-            riskPercentage += disconnects * 30; 
-        }
-        
-        if (sendAttempts > 50) {
-            riskPercentage += 10;
-        }
-        if (sendAttempts > 200) {
-            riskPercentage += 20;
-        }
-
+        if (disconnects > 0) riskPercentage += disconnects * 30; 
+        if (sendAttempts > 50) riskPercentage += 10;
+        if (sendAttempts > 200) riskPercentage += 20;
         if (riskPercentage > 100) riskPercentage = 100;
         
         return {
@@ -132,7 +123,8 @@ async function startWhatsAppSession(sessionId = 'default') {
         auth: state,
         printQRInTerminal: true, 
         logger,
-        browser: ['Mac OS', 'Chrome', '120.0.0.0'],
+        // تعديل بصمة المتصفح لتجنب الحظر
+        browser: ['Exo WhatsApp', 'Safari', '1.0.0'],
         syncFullHistory: false,
         connectTimeoutMs: 60000,
         defaultQueryTimeoutMs: 60000,
@@ -219,43 +211,43 @@ async function startWhatsAppSession(sessionId = 'default') {
     return sock;
 }
 
-// 🛠️ دالة تحويل الرقم بدون الاتصال بالسيرفر لتجنب الحظر وفصل السيرفر
+// 🛠️ دالة تحويل الرقم وإصلاح صيغة الأرقام المصرية تلقائياً
 function getSanitizedJid(number) {
     let cleanNumber = number.toString().replace(/[^0-9]/g, '');
+    
+    // سحر التعديل: لو الرقم 012 أو 010 وطوله 11، هيتحول لوحده لـ 2012 و 2010
+    if (cleanNumber.startsWith('0') && cleanNumber.length === 11) {
+        cleanNumber = '20' + cleanNumber.substring(1); 
+    }
+    
     return `${cleanNumber}@s.whatsapp.net`;
 }
 
-// 🎭 دالة محاكاة الكتابة البشرية (طويلة جداً للواقعية)
+// 🎭 دالة محاكاة الكتابة البشرية الواقعية جداً (تاخد وقت كأنك بتكتب بجد)
 async function simulateHumanTyping(sock, jid) {
     try {
-        // يكتب لفترة طويلة (8 ثواني)
         await sock.sendPresenceUpdate('composing', jid);
-        await new Promise(r => setTimeout(r, 8000));
+        await new Promise(r => setTimeout(r, 8000)); // كتابة 8 ثواني
         
-        // يتوقف (كأنه بيمسح أو بيفكر لمدة ثانيتين)
         await sock.sendPresenceUpdate('paused', jid);
-        await new Promise(r => setTimeout(r, 2000));
+        await new Promise(r => setTimeout(r, 2000)); // وقوف ثانيتين
         
-        // يرجع يكتب تاني (6 ثواني)
         await sock.sendPresenceUpdate('composing', jid);
-        await new Promise(r => setTimeout(r, 6000));
+        await new Promise(r => setTimeout(r, 6000)); // كتابة 6 ثواني
 
-        // يتوقف (ثانية ونص)
         await sock.sendPresenceUpdate('paused', jid);
-        await new Promise(r => setTimeout(r, 1500));
+        await new Promise(r => setTimeout(r, 1500)); // وقوف ثانية ونص
 
-        // يكتب للمرة الأخيرة قبل الإرسال (5 ثواني)
         await sock.sendPresenceUpdate('composing', jid);
-        await new Promise(r => setTimeout(r, 5000));
+        await new Promise(r => setTimeout(r, 5000)); // كتابة 5 ثواني
 
-        // إيقاف الكتابة نهائياً قبل الإرسال المباشر
         await sock.sendPresenceUpdate('paused', jid);
     } catch (e) {
         console.warn("Typing simulation error:", e.message);
     }
 }
 
-// 🟢 API لتحديث حالة "يكتب الآن" أو "تسجيل صوتي" يدوي
+// 🟢 API لتحديث الحالة يدوياً
 app.post('/presence', async (req, res) => {
     const { sessionId = 'default', number, presence = 'composing' } = req.body;
 
@@ -312,9 +304,8 @@ app.post('/send-message', async (req, res) => {
     }
 });
 
-// 🟢 إرسال الحملات الإعلانية (مع حماية الفاصل العشوائي والكتابة البشرية)
+// 🟢 إرسال الحملات الإعلانية (بالحماية الكاملة والفاصل العشوائي)
 app.post('/send-campaign', async (req, res) => {
-    // delay هنا هو الوقت الأساسي اللي بتبعته في الـ Request (بالمللي ثانية)
     const { sessionId = 'default', numbers, message, delay = 15000, showTyping = true } = req.body;
 
     if (!numbers || !Array.isArray(numbers) || !message) {
@@ -331,18 +322,16 @@ app.post('/send-campaign', async (req, res) => {
     for (const number of numbers) {
         try {
             session.sendAttempts = (session.sendAttempts || 0) + 1;
-            const jid = getSanitizedJid(number);
+            const jid = getSanitizedJid(number); // هيصلح الأرقام اللي بـ 0 تلقائي
             
-            // محاكاة الكتابة البشرية الواقعية جداً
             if (showTyping) {
-                await simulateHumanTyping(session.sock, jid);
+                await simulateHumanTyping(session.sock, jid); // هيكتب بطريقة واقعية
             }
 
-            // إرسال الرسالة
             await session.sock.sendMessage(jid, { text: message });
             console.log(`✅ Campaign: Message sent to ${jid}`);
             
-            // إضافة وقت عشوائي (من 0 إلى 15 ثانية) فوق الوقت الأساسي للتمويه على واتساب
+            // إضافة وقت عشوائي فوق وقت الانتظار الأساسي للتمويه
             const randomDelay = delay + Math.floor(Math.random() * 15000);
             console.log(`⏳ Waiting for ${Math.floor(randomDelay / 1000)} seconds before next message...`);
             await new Promise(resolve => setTimeout(resolve, randomDelay));
@@ -372,7 +361,7 @@ const checkAndInitSessions = async () => {
     } catch (err) {}
 };
 
-// 🟢 منع Render من النوم
+// 🟢 منع Render أو Replit من النوم
 const RENDER_EXTERNAL_URL = process.env.RENDER_EXTERNAL_URL;
 if (RENDER_EXTERNAL_URL) {
     setInterval(() => {
