@@ -63,29 +63,48 @@ app.get('/sessions', (req, res) => {
     res.json(sessionStatus);
 });
 
-// 🟢 API فحص صحة الجلسات ونسبة الحظر لـ Replit Agent (معدل لمعالجة خطأ غير متصل)
+// 🟢 API فحص صحة الجلسات ونسبة الخطر التقريبية (لحماية الرقم)
 app.get('/sessions/health', (req, res) => {
     const sessionKeys = Object.keys(sessions);
 
-    // إذا لم تكن هناك جلسات ممررة بعد، يتم إرجاع جلسة افتراضية لمنع توقف Replit Agent
     if (sessionKeys.length === 0) {
         return res.json([{
             sessionId: "default",
             sendAttempts: 0,
-            confirmedBanEvents: 0,
+            disconnectEvents: 0,
             currentStatus: "offline",
-            banSignals: []
+            banRiskPercentage: "0%"
         }]);
     }
 
     const healthData = sessionKeys.map(sessionId => {
         const session = sessions[sessionId];
+        
+        let sendAttempts = session.sendAttempts || 0;
+        let disconnects = session.confirmedBanEvents || 0;
+        
+        // حساب تقريبي لنسبة الخطر
+        let riskPercentage = 0;
+        
+        if (disconnects > 0) {
+            riskPercentage += disconnects * 30; 
+        }
+        
+        if (sendAttempts > 50) {
+            riskPercentage += 10;
+        }
+        if (sendAttempts > 200) {
+            riskPercentage += 20;
+        }
+
+        if (riskPercentage > 100) riskPercentage = 100;
+        
         return {
             sessionId: sessionId,
-            sendAttempts: session.sendAttempts || 0,
-            confirmedBanEvents: session.confirmedBanEvents || 0,
             currentStatus: session.status || 'offline',
-            banSignals: session.banSignals || []
+            sendAttempts: sendAttempts,
+            disconnectEvents: disconnects,
+            banRiskPercentage: `${riskPercentage}%`
         };
     });
 
@@ -93,14 +112,11 @@ app.get('/sessions/health', (req, res) => {
 });
 
 async function startWhatsAppSession(sessionId = 'default') {
-    // إغلاق السوكيت القديم إن وجد لمنع التضارب
     if (sessions[sessionId] && sessions[sessionId].sock) {
         try {
             sessions[sessionId].sock.ev.removeAllListeners();
             sessions[sessionId].sock.ws?.close();
-        } catch (e) {
-            // ignore cleanup errors
-        }
+        } catch (e) {}
     }
 
     const authPath = `auth_info_baileys_${sessionId}`;
@@ -119,11 +135,10 @@ async function startWhatsAppSession(sessionId = 'default') {
         browser: ['Mac OS', 'Chrome', '120.0.0.0'],
         syncFullHistory: false,
         connectTimeoutMs: 60000,
-        defaultQueryTimeoutMs: 60000, // لمنع المهلة (Timeouts) أثناء الإرسال
-        keepAliveIntervalMs: 10000    // الحفاظ على حيوية الـ WebSocket
+        defaultQueryTimeoutMs: 60000,
+        keepAliveIntervalMs: 10000
     });
 
-    // الحفاظ على الإحصائيات السابقة إن وجدت
     const existingSendAttempts = sessions[sessionId]?.sendAttempts || 0;
     const existingBanEvents = sessions[sessionId]?.confirmedBanEvents || 0;
     const existingBanSignals = sessions[sessionId]?.banSignals || [];
@@ -181,7 +196,6 @@ async function startWhatsAppSession(sessionId = 'default') {
             }
         } else if (connection === 'open') {
             console.log(`\n✅ الجلسة متصلة وجاهزة! [${sessionId}]`);
-            
             if (sessions[sessionId]) {
                 sessions[sessionId].status = 'connected';
                 sessions[sessionId].sock = sock;
@@ -205,23 +219,43 @@ async function startWhatsAppSession(sessionId = 'default') {
     return sock;
 }
 
-// 🛠️ دالة مساعدة لتحويل وتأكيد رقم الواتساب (JID)
-async function getSanitizedJid(sock, number) {
+// 🛠️ دالة تحويل الرقم بدون الاتصال بالسيرفر لتجنب الحظر وفصل السيرفر
+function getSanitizedJid(number) {
     let cleanNumber = number.toString().replace(/[^0-9]/g, '');
-    
-    try {
-        const [result] = await sock.onWhatsApp(cleanNumber);
-        if (result && result.exists) {
-            return result.jid;
-        }
-    } catch (e) {
-        console.warn(`onWhatsApp check failed for ${cleanNumber}, using fallback format.`);
-    }
-    
     return `${cleanNumber}@s.whatsapp.net`;
 }
 
-// 🟢 API لتحديث حالة "يكتب الآن" أو "تسجيل صوتي"
+// 🎭 دالة محاكاة الكتابة البشرية (طويلة جداً للواقعية)
+async function simulateHumanTyping(sock, jid) {
+    try {
+        // يكتب لفترة طويلة (8 ثواني)
+        await sock.sendPresenceUpdate('composing', jid);
+        await new Promise(r => setTimeout(r, 8000));
+        
+        // يتوقف (كأنه بيمسح أو بيفكر لمدة ثانيتين)
+        await sock.sendPresenceUpdate('paused', jid);
+        await new Promise(r => setTimeout(r, 2000));
+        
+        // يرجع يكتب تاني (6 ثواني)
+        await sock.sendPresenceUpdate('composing', jid);
+        await new Promise(r => setTimeout(r, 6000));
+
+        // يتوقف (ثانية ونص)
+        await sock.sendPresenceUpdate('paused', jid);
+        await new Promise(r => setTimeout(r, 1500));
+
+        // يكتب للمرة الأخيرة قبل الإرسال (5 ثواني)
+        await sock.sendPresenceUpdate('composing', jid);
+        await new Promise(r => setTimeout(r, 5000));
+
+        // إيقاف الكتابة نهائياً قبل الإرسال المباشر
+        await sock.sendPresenceUpdate('paused', jid);
+    } catch (e) {
+        console.warn("Typing simulation error:", e.message);
+    }
+}
+
+// 🟢 API لتحديث حالة "يكتب الآن" أو "تسجيل صوتي" يدوي
 app.post('/presence', async (req, res) => {
     const { sessionId = 'default', number, presence = 'composing' } = req.body;
 
@@ -235,7 +269,7 @@ app.post('/presence', async (req, res) => {
     }
 
     try {
-        const jid = await getSanitizedJid(session.sock, number);
+        const jid = getSanitizedJid(number);
         await session.sock.sendPresenceUpdate(presence, jid);
         res.json({ success: true, sessionId, jid, presence });
     } catch (err) {
@@ -244,7 +278,7 @@ app.post('/presence', async (req, res) => {
     }
 });
 
-// 🟢 إرسال رسالة فردية (مع دعم إعادة الاتصال التلقائي)
+// 🟢 إرسال رسالة فردية
 app.post('/send-message', async (req, res) => {
     const { sessionId = 'default', number, message, showTyping = true } = req.body;
 
@@ -255,40 +289,33 @@ app.post('/send-message', async (req, res) => {
     let session = sessions[sessionId];
 
     if (!session || !session.sock || session.status !== 'connected') {
-        console.log(`⚠️ الجلسة ${sessionId} غير متصلة أثناء محاولة الإرسال، جاري إعادة الاتصال...`);
+        console.log(`⚠️ الجلسة ${sessionId} غير متصلة أثناء محاولة الإرسال...`);
         startWhatsAppSession(sessionId);
-        return res.status(503).json({ error: `Session ${sessionId} was disconnected. Reconnecting... Please try again in 5 seconds.` });
+        return res.status(503).json({ error: `Session disconnected. Reconnecting...` });
     }
 
     try {
         session.sendAttempts = (session.sendAttempts || 0) + 1;
-        const jid = await getSanitizedJid(session.sock, number);
+        const jid = getSanitizedJid(number);
 
         if (showTyping) {
-            try {
-                await session.sock.sendPresenceUpdate('composing', jid);
-                await new Promise(resolve => setTimeout(resolve, 1500));
-                await session.sock.sendPresenceUpdate('paused', jid);
-            } catch (pErr) {
-                console.warn("Typing presence skipped due to minor error:", pErr.message);
-            }
+            await simulateHumanTyping(session.sock, jid);
         }
 
         await session.sock.sendMessage(jid, { text: message });
         res.json({ success: true, sessionId, sentTo: jid });
     } catch (err) {
         console.error(`❌ Error sending message:`, err.message);
-        
         if (sessions[sessionId]) sessions[sessionId].status = 'disconnected';
         startWhatsAppSession(sessionId);
-
-        res.status(500).json({ error: 'Failed to send message. Connection was lost and is now reconnecting.' });
+        res.status(500).json({ error: 'Failed to send message.' });
     }
 });
 
-// 🟢 إرسال الحملات الإعلانية
+// 🟢 إرسال الحملات الإعلانية (مع حماية الفاصل العشوائي والكتابة البشرية)
 app.post('/send-campaign', async (req, res) => {
-    const { sessionId = 'default', numbers, message, delay = 5000 } = req.body;
+    // delay هنا هو الوقت الأساسي اللي بتبعته في الـ Request (بالمللي ثانية)
+    const { sessionId = 'default', numbers, message, delay = 15000, showTyping = true } = req.body;
 
     if (!numbers || !Array.isArray(numbers) || !message) {
         return res.status(400).json({ error: 'Numbers array and message are required' });
@@ -304,27 +331,29 @@ app.post('/send-campaign', async (req, res) => {
     for (const number of numbers) {
         try {
             session.sendAttempts = (session.sendAttempts || 0) + 1;
-            const jid = await getSanitizedJid(session.sock, number);
+            const jid = getSanitizedJid(number);
             
-            try {
-                await session.sock.sendPresenceUpdate('composing', jid);
-                await new Promise(resolve => setTimeout(resolve, 1500));
-                await session.sock.sendPresenceUpdate('paused', jid);
-            } catch (e) {
-                // Ignore presence errors in campaign loop
+            // محاكاة الكتابة البشرية الواقعية جداً
+            if (showTyping) {
+                await simulateHumanTyping(session.sock, jid);
             }
 
+            // إرسال الرسالة
             await session.sock.sendMessage(jid, { text: message });
             console.log(`✅ Campaign: Message sent to ${jid}`);
             
-            await new Promise(resolve => setTimeout(resolve, delay));
+            // إضافة وقت عشوائي (من 0 إلى 15 ثانية) فوق الوقت الأساسي للتمويه على واتساب
+            const randomDelay = delay + Math.floor(Math.random() * 15000);
+            console.log(`⏳ Waiting for ${Math.floor(randomDelay / 1000)} seconds before next message...`);
+            await new Promise(resolve => setTimeout(resolve, randomDelay));
+            
         } catch (err) {
             console.error(`❌ Campaign: Error sending to ${number}:`, err.message);
         }
     }
 });
 
-// 🟢 استعادة الجلسات تلقائياً عند التشغيل
+// 🟢 استعادة الجلسات تلقائياً
 const checkAndInitSessions = async () => {
     try {
         const files = fs.readdirSync(__dirname);
@@ -340,20 +369,14 @@ const checkAndInitSessions = async () => {
             console.log(`🚀 البدء التلقائي للجلسة الافتراضية [default]...`);
             await startWhatsAppSession('default');
         }
-    } catch (err) {
-        console.error('خطأ أثناء استعادة الجلسات:', err);
-    }
+    } catch (err) {}
 };
 
-// 🟢 منع Render من النوم (Self Ping كل 5 دقائق)
+// 🟢 منع Render من النوم
 const RENDER_EXTERNAL_URL = process.env.RENDER_EXTERNAL_URL;
 if (RENDER_EXTERNAL_URL) {
     setInterval(() => {
-        http.get(RENDER_EXTERNAL_URL, (res) => {
-            console.log(`⏰ Self-ping successful: ${res.statusCode}`);
-        }).on('error', (err) => {
-            console.error('❌ Self-ping error:', err.message);
-        });
+        http.get(RENDER_EXTERNAL_URL, (res) => {}).on('error', (err) => {});
     }, 5 * 60 * 1000);
 }
 
