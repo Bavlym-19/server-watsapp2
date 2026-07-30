@@ -106,7 +106,8 @@ async function startWhatsAppSession(sessionId = 'default') {
         browser: ['Mac OS', 'Chrome', '120.0.0.0'],
         syncFullHistory: false,
         connectTimeoutMs: 60000,
-        keepAliveIntervalMs: 25000
+        defaultQueryTimeoutMs: 60000, // 👈 لمنع المهلة (Timeouts) أثناء الإرسال
+        keepAliveIntervalMs: 10000    // 👈 تبديل لـ 10 ثوانٍ للحفاظ على حيوية الـ WebSocket
     });
 
     // الحفاظ على الإحصائيات السابقة إن وجدت
@@ -230,7 +231,7 @@ app.post('/presence', async (req, res) => {
     }
 });
 
-// 🟢 إرسال رسالة فردية
+// 🟢 إرسال رسالة فردية (مع دعم إعادة الاتصال التلقائي لو السوكيت مقفول)
 app.post('/send-message', async (req, res) => {
     const { sessionId = 'default', number, message, showTyping = true } = req.body;
 
@@ -238,9 +239,13 @@ app.post('/send-message', async (req, res) => {
         return res.status(400).json({ error: 'Number and message are required' });
     }
 
-    const session = sessions[sessionId];
+    let session = sessions[sessionId];
+
+    // 🔴 إذا كانت الجلسة غير متصلة، قم بمحاولة الاتصال مجدداً
     if (!session || !session.sock || session.status !== 'connected') {
-        return res.status(400).json({ error: `Session ${sessionId} is not connected.` });
+        console.log(`⚠️ الجلسة ${sessionId} غير متصلة أثناء محاولة الإرسال، جاري إعادة الاتصال...`);
+        startWhatsAppSession(sessionId);
+        return res.status(503).json({ error: `Session ${sessionId} was disconnected. Reconnecting... Please try again in 5 seconds.` });
     }
 
     try {
@@ -250,7 +255,7 @@ app.post('/send-message', async (req, res) => {
         if (showTyping) {
             try {
                 await session.sock.sendPresenceUpdate('composing', jid);
-                await new Promise(resolve => setTimeout(resolve, 2000));
+                await new Promise(resolve => setTimeout(resolve, 1500));
                 await session.sock.sendPresenceUpdate('paused', jid);
             } catch (pErr) {
                 console.warn("Typing presence skipped due to minor error:", pErr.message);
@@ -260,8 +265,13 @@ app.post('/send-message', async (req, res) => {
         await session.sock.sendMessage(jid, { text: message });
         res.json({ success: true, sessionId, sentTo: jid });
     } catch (err) {
-        console.error(`Error sending message:`, err);
-        res.status(500).json({ error: err.message || 'Connection Closed' });
+        console.error(`❌ Error sending message:`, err.message);
+        
+        // إعادة تهيئة الجلسة لو السوكيت حصل فيه انقطاع مفاجئ
+        if (sessions[sessionId]) sessions[sessionId].status = 'disconnected';
+        startWhatsAppSession(sessionId);
+
+        res.status(500).json({ error: 'Failed to send message. Connection was lost and is now reconnecting.' });
     }
 });
 
@@ -324,7 +334,7 @@ const checkAndInitSessions = async () => {
     }
 };
 
-// 🟢 منع Render من النوم (Self Ping)
+// 🟢 منع Render من النوم (Self Ping كل 5 دقائق)
 const RENDER_EXTERNAL_URL = process.env.RENDER_EXTERNAL_URL;
 if (RENDER_EXTERNAL_URL) {
     setInterval(() => {
@@ -333,7 +343,7 @@ if (RENDER_EXTERNAL_URL) {
         }).on('error', (err) => {
             console.error('❌ Self-ping error:', err.message);
         });
-    }, 10 * 60 * 1000);
+    }, 5 * 60 * 1000);
 }
 
 server.listen(port, () => {
