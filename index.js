@@ -123,7 +123,6 @@ async function startWhatsAppSession(sessionId = 'default') {
         auth: state,
         printQRInTerminal: true, 
         logger,
-        // تعديل بصمة المتصفح لتجنب الحظر
         browser: ['Exo WhatsApp', 'Safari', '1.0.0'],
         syncFullHistory: false,
         connectTimeoutMs: 60000,
@@ -223,24 +222,11 @@ function getSanitizedJid(number) {
     return `${cleanNumber}@s.whatsapp.net`;
 }
 
-// 🎭 دالة محاكاة الكتابة البشرية الواقعية جداً (تاخد وقت كأنك بتكتب بجد)
+// 🎭 محاكاة سريعة للتجربة (3 ثواني) لتجنب انقطاع الاتصال (Timeout)
 async function simulateHumanTyping(sock, jid) {
     try {
         await sock.sendPresenceUpdate('composing', jid);
-        await new Promise(r => setTimeout(r, 8000)); // كتابة 8 ثواني
-        
-        await sock.sendPresenceUpdate('paused', jid);
-        await new Promise(r => setTimeout(r, 2000)); // وقوف ثانيتين
-        
-        await sock.sendPresenceUpdate('composing', jid);
-        await new Promise(r => setTimeout(r, 6000)); // كتابة 6 ثواني
-
-        await sock.sendPresenceUpdate('paused', jid);
-        await new Promise(r => setTimeout(r, 1500)); // وقوف ثانية ونص
-
-        await sock.sendPresenceUpdate('composing', jid);
-        await new Promise(r => setTimeout(r, 5000)); // كتابة 5 ثواني
-
+        await new Promise(r => setTimeout(r, 3000));
         await sock.sendPresenceUpdate('paused', jid);
     } catch (e) {
         console.warn("Typing simulation error:", e.message);
@@ -322,16 +308,15 @@ app.post('/send-campaign', async (req, res) => {
     for (const number of numbers) {
         try {
             session.sendAttempts = (session.sendAttempts || 0) + 1;
-            const jid = getSanitizedJid(number); // هيصلح الأرقام اللي بـ 0 تلقائي
+            const jid = getSanitizedJid(number);
             
             if (showTyping) {
-                await simulateHumanTyping(session.sock, jid); // هيكتب بطريقة واقعية
+                await simulateHumanTyping(session.sock, jid);
             }
 
             await session.sock.sendMessage(jid, { text: message });
             console.log(`✅ Campaign: Message sent to ${jid}`);
             
-            // إضافة وقت عشوائي فوق وقت الانتظار الأساسي للتمويه
             const randomDelay = delay + Math.floor(Math.random() * 15000);
             console.log(`⏳ Waiting for ${Math.floor(randomDelay / 1000)} seconds before next message...`);
             await new Promise(resolve => setTimeout(resolve, randomDelay));
