@@ -87,7 +87,7 @@ async function startWhatsAppSession(sessionId = 'default') {
         version,
         auth: state,
         logger: P({ level: 'silent' }),
-        browser: ['macOS','M4 Pro'], // البصمة المعتمدة
+        browser: ['Mac OS','M4 Pro'], // 🔴 البصمة اتعدلت لـ Mac OS عشان واتساب ميحظرش الـ API
         syncFullHistory: false,
         connectTimeoutMs: 60000,
         keepAliveIntervalMs: 15000,
@@ -152,9 +152,27 @@ function getSanitizedJid(number) {
     return `${cleanNumber}@s.whatsapp.net`;
 }
 
+// 🛡️ دالة منع الحظر (Spintax) لتبديل الكلمات عشوائياً
+function applySpintax(text) {
+    const spintaxRegex = /{([^{}]+)}/g;
+    return text.replace(spintaxRegex, (match, options) => {
+        const choices = options.split('|');
+        return choices[Math.floor(Math.random() * choices.length)];
+    });
+}
+
+// 🟢 دالة محاكاة الكتابة بعد إضافة ميزة قراءة الشات أولاً
 async function simulateHumanTyping(sock, jid, message = "") {
     try {
         let typeDuration = Math.max(4000, Math.min(25000, message.length * 150));
+        
+        // 1️⃣ يفتح الشات المخصوص بتاع العميل ده (هيبان للعميل إنك متصل الآن)
+        await sock.sendPresenceUpdate('available', jid);
+        
+        // 2️⃣ السيرفر هيستنى 3 ثواني (محاكاة إنك بتقرأ الشات القديم اللي بينكم)
+        await new Promise(r => setTimeout(r, 3000));
+        
+        // 3️⃣ يقلب الحالة لـ (يكتب الآن - Typing)
         await sock.sendPresenceUpdate('composing', jid);
         if (typeDuration > 10000) {
             await new Promise(r => setTimeout(r, typeDuration / 2));
@@ -165,6 +183,8 @@ async function simulateHumanTyping(sock, jid, message = "") {
         } else {
             await new Promise(r => setTimeout(r, typeDuration));
         }
+        
+        // 4️⃣ يوقف كتابة قبل الإرسال بجزء من الثانية
         await sock.sendPresenceUpdate('paused', jid);
     } catch (e) {}
 }
@@ -187,10 +207,13 @@ async function processMessageQueue() {
 
         try {
             session.sendAttempts++;
-            // 🔴 صلحنا المشكلة اللي كانت بتمنع الدالة من الإرسال هنا
-            if (task.showTyping) await simulateHumanTyping(session.sock, task.jid, task.message); 
             
-            await session.sock.sendMessage(task.jid, { text: task.message });
+            // 🛡️ تطبيق مانع الحظر على الرسالة قبل ما تتكتب وتتبعت
+            const finalMessage = applySpintax(task.message);
+
+            if (task.showTyping) await simulateHumanTyping(session.sock, task.jid, finalMessage); 
+            
+            await session.sock.sendMessage(task.jid, { text: finalMessage });
             console.log(`✅ Queued Message sent to ${task.jid} (Remaining: ${messageQueue.length})`);
             
             const randomDelay = (task.delay || 5000) + Math.floor(Math.random() * 8000);
@@ -230,7 +253,6 @@ app.post('/send-campaign', async (req, res) => {
 
 const checkAndInitSessions = async () => {
     try {
-        // 🟢 رجعنا نظام الاستعادة عشان يحفظ الجلسة وميطلبش الباركود كل مرة
         const files = fs.readdirSync(__dirname);
         const authFolders = files.filter(file => file.startsWith('auth_info_baileys_'));
         if (authFolders.length > 0) {
