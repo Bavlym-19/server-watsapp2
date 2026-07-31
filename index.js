@@ -86,9 +86,8 @@ async function startWhatsAppSession(sessionId = 'default') {
     const sock = makeWASocket({
         version,
         auth: state,
-        printQRInTerminal: true, 
         logger: P({ level: 'silent' }),
-        browser: ['macOS'], // 🔴 التعديل بتاع الماك بوك هنا
+        browser: ['macOS'], // 🔴 التعديل هنا: اتكتبت بطريقة صحيحة يقبلها الواتساب
         syncFullHistory: false,
         connectTimeoutMs: 60000,
         keepAliveIntervalMs: 15000,
@@ -113,6 +112,8 @@ async function startWhatsAppSession(sessionId = 'default') {
 
         if (connection === 'close') {
             let reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
+            console.log(`❌ الاتصال مقفول لجلسة [${sessionId}]. السبب: ${reason || 'غير معروف'}`);
+            
             if (reason === DisconnectReason.loggedOut) {
                 if (sessions[sessionId]) sessions[sessionId].confirmedBanEvents++;
                 if (fs.existsSync(authPath)) fs.rmSync(authPath, { recursive: true, force: true });
@@ -121,9 +122,11 @@ async function startWhatsAppSession(sessionId = 'default') {
             } else {
                 if (sessions[sessionId]) sessions[sessionId].status = 'reconnecting';
                 io.emit('status', { sessionId, status: 'reconnecting' });
+                // لو السبب مش 401 (يعني مفيش حظر)، يحاول يتصل تاني
                 setTimeout(() => startWhatsAppSession(sessionId), 5000);
             }
         } else if (connection === 'open') {
+            console.log(`\n✅ الجلسة متصلة وجاهزة! [${sessionId}]`);
             if (sessions[sessionId]) { sessions[sessionId].status = 'connected'; sessions[sessionId].sock = sock; }
             io.emit('status', { sessionId, status: 'connected', user: sock.user });
         }
@@ -156,22 +159,20 @@ async function simulateHumanTyping(sock, jid, message = "") {
     } catch (e) {}
 }
 
-// 🚦 نظام الطابور (Queue) الذكي لمعالجة الرسايل في الخلفية
 async function processMessageQueue() {
     if (isProcessingQueue) return;
     isProcessingQueue = true;
 
     while (messageQueue.length > 0) {
-        const task = messageQueue[0]; // نقرأ أول رسالة
+        const task = messageQueue[0];
         let session = sessions[task.sessionId];
 
         if (!session || !session.sock || session.status !== 'connected') {
             console.log(`⚠️ Queue: Session offline, pausing for 10s...`);
             await new Promise(r => setTimeout(r, 10000));
-            continue; // نوقف الطابور شوية لحد ما الجلسة ترجع
+            continue; 
         }
 
-        // لو الجلسة شغالة، نشيل الرسالة من الطابور ونبعتها
         messageQueue.shift();
 
         try {
@@ -180,7 +181,6 @@ async function processMessageQueue() {
             await session.sock.sendMessage(task.jid, { text: task.message });
             console.log(`✅ Queued Message sent to ${task.jid} (Remaining: ${messageQueue.length})`);
             
-            // انتظار واقعي بين كل رسالة والتانية (حسب الحملة أو 5 ثواني لو رسالة فردية)
             const randomDelay = (task.delay || 5000) + Math.floor(Math.random() * 8000);
             await new Promise(r => setTimeout(r, randomDelay));
         } catch (err) {
@@ -198,7 +198,6 @@ app.post('/send-message', async (req, res) => {
     const jid = getSanitizedJid(number);
     messageQueue.push({ sessionId, jid, message, showTyping, delay: 5000 });
     
-    // نرد على ريبليت فوراً عشان متعملش (Failed) أو (Retry)
     res.json({ success: true, sessionId, status: 'queued' });
     processMessageQueue();
 });
@@ -207,10 +206,8 @@ app.post('/send-campaign', async (req, res) => {
     const { sessionId = 'default', numbers, message, delay = 15000, showTyping = true } = req.body;
     if (!numbers || !Array.isArray(numbers) || !message) return res.status(400).json({ error: 'Numbers array and message are required' });
 
-    // نرد فوراً على الموقع
     res.json({ success: true, message: 'Campaign added to queue', total: numbers.length });
 
-    // نضيف الأرقام كلها للطابور
     for (const number of numbers) {
         const jid = getSanitizedJid(number);
         messageQueue.push({ sessionId, jid, message, showTyping, delay });
