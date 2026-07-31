@@ -88,7 +88,7 @@ async function startWhatsAppSession(sessionId = 'default') {
         auth: state,
         printQRInTerminal: true, 
         logger: P({ level: 'silent' }),
-        browser: ['MacOS', 'Safari', '27.0'], // 🔴 التعديل بتاع الماك بوك هنا
+        browser: ['macOS'], // 🔴 التعديل بتاع الماك بوك هنا
         syncFullHistory: false,
         connectTimeoutMs: 60000,
         keepAliveIntervalMs: 15000,
