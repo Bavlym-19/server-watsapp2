@@ -26,6 +26,7 @@ app.use(express.json());
 const sessions = {};
 const messageQueue = [];
 let isProcessingQueue = false;
+const unreadMessages = {}; // 🔵 تخزين الرسايل اللي محتاجة سين
 
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 
@@ -87,7 +88,7 @@ async function startWhatsAppSession(sessionId = 'default') {
         version,
         auth: state,
         logger: P({ level: 'silent' }),
-        browser: ['Mac OS','M4 Pro'], // 🔴 البصمة اتعدلت لـ Mac OS عشان واتساب ميحظرش الـ API
+        browser: ['macOS','M4 Pro'],
         syncFullHistory: false,
         connectTimeoutMs: 60000,
         keepAliveIntervalMs: 15000,
@@ -132,13 +133,24 @@ async function startWhatsAppSession(sessionId = 'default') {
             if (sessions[sessionId]) { sessions[sessionId].status = 'connected'; sessions[sessionId].sock = sock; }
             io.emit('status', { sessionId, status: 'connected', user: sock.user });
 
-            // إجبار الواتساب إنه يفضل متصل الآن طول الوقت
             sock.sendPresenceUpdate('available');
             setInterval(() => {
                 if (sessions[sessionId] && sessions[sessionId].status === 'connected') {
                     sock.sendPresenceUpdate('available');
                 }
             }, 60000); 
+        }
+    });
+
+    // 🔵 تخزين أي رسالة جاية من العملاء عشان نعملها سين وقت ما نبعتلهم
+    sock.ev.on('messages.upsert', async ({ messages: newMessages }) => {
+        for (const msg of newMessages) {
+            if (!msg.key.fromMe && msg.key.remoteJid) {
+                if (!unreadMessages[msg.key.remoteJid]) {
+                    unreadMessages[msg.key.remoteJid] = [];
+                }
+                unreadMessages[msg.key.remoteJid].push(msg.key);
+            }
         }
     });
 
@@ -152,27 +164,24 @@ function getSanitizedJid(number) {
     return `${cleanNumber}@s.whatsapp.net`;
 }
 
-// 🛡️ دالة منع الحظر (Spintax) لتبديل الكلمات عشوائياً
-function applySpintax(text) {
-    const spintaxRegex = /{([^{}]+)}/g;
-    return text.replace(spintaxRegex, (match, options) => {
-        const choices = options.split('|');
-        return choices[Math.floor(Math.random() * choices.length)];
-    });
-}
-
-// 🟢 دالة محاكاة الكتابة بعد إضافة ميزة قراءة الشات أولاً
 async function simulateHumanTyping(sock, jid, message = "") {
     try {
         let typeDuration = Math.max(4000, Math.min(25000, message.length * 150));
         
-        // 1️⃣ يفتح الشات المخصوص بتاع العميل ده (هيبان للعميل إنك متصل الآن)
+        // 1️⃣ 🟢 متصل الآن
         await sock.sendPresenceUpdate('available', jid);
         
-        // 2️⃣ السيرفر هيستنى 3 ثواني (محاكاة إنك بتقرأ الشات القديم اللي بينكم)
+        // 2️⃣ ✅✅ سين على رسايل العميل القديمة
+        if (unreadMessages[jid] && unreadMessages[jid].length > 0) {
+            await new Promise(r => setTimeout(r, 1500));
+            await sock.readMessages(unreadMessages[jid]);
+            console.log(`👁️ تم عمل سين على ${unreadMessages[jid].length} رسالة من ${jid}`);
+            delete unreadMessages[jid];
+        }
+        
         await new Promise(r => setTimeout(r, 3000));
         
-        // 3️⃣ يقلب الحالة لـ (يكتب الآن - Typing)
+        // 3️⃣ ✍️ يكتب الآن
         await sock.sendPresenceUpdate('composing', jid);
         if (typeDuration > 10000) {
             await new Promise(r => setTimeout(r, typeDuration / 2));
@@ -184,7 +193,6 @@ async function simulateHumanTyping(sock, jid, message = "") {
             await new Promise(r => setTimeout(r, typeDuration));
         }
         
-        // 4️⃣ يوقف كتابة قبل الإرسال بجزء من الثانية
         await sock.sendPresenceUpdate('paused', jid);
     } catch (e) {}
 }
@@ -206,14 +214,19 @@ async function processMessageQueue() {
         messageQueue.shift();
 
         try {
-            session.sendAttempts++;
-            
-            // 🛡️ تطبيق مانع الحظر على الرسالة قبل ما تتكتب وتتبعت
-            const finalMessage = applySpintax(task.message);
+            // 🔍 فحص الرقم: هل عليه واتساب ولا لأ؟
+            const [result] = await session.sock.onWhatsApp(task.jid.replace('@s.whatsapp.net', ''));
+            if (!result || !result.exists) {
+                console.log(`⏭️ الرقم ${task.jid} مش عليه واتساب، تم تخطيه`);
+                continue;
+            }
 
-            if (task.showTyping) await simulateHumanTyping(session.sock, task.jid, finalMessage); 
+            session.sendAttempts++;
+
+            // 🟢 متصل → ✅✅ سين → ✍️ يكتب → 🚀 يبعت
+            if (task.showTyping) await simulateHumanTyping(session.sock, task.jid, task.message); 
             
-            await session.sock.sendMessage(task.jid, { text: finalMessage });
+            await session.sock.sendMessage(task.jid, { text: task.message });
             console.log(`✅ Queued Message sent to ${task.jid} (Remaining: ${messageQueue.length})`);
             
             const randomDelay = (task.delay || 5000) + Math.floor(Math.random() * 8000);
