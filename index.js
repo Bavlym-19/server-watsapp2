@@ -13,7 +13,6 @@ const qrcode = require("qrcode");
 const path = require("path");
 const fs = require("fs");
 
-// منع السيرفر من إنه يعمل Crash مهما حصلت أخطاء
 process.on('uncaughtException', (err) => console.error('Uncaught Exception:', err));
 process.on('unhandledRejection', (reason) => console.error('Unhandled Rejection:', reason));
 
@@ -25,12 +24,11 @@ const port = process.env.PORT || 3000;
 app.use(express.json());
 
 const sessions = {};
+const messageQueue = [];
+let isProcessingQueue = false;
 
-app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'index.html'));
-});
+app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 
-// 🟢 بدء أو فحص الجلسة
 app.post('/session/start', async (req, res) => {
     const { sessionId = 'default' } = req.body;
     if (sessions[sessionId] && sessions[sessionId].status === 'connected') {
@@ -40,52 +38,37 @@ app.post('/session/start', async (req, res) => {
         await startWhatsAppSession(sessionId);
         res.json({ success: true, message: `Session ${sessionId} check/start initiated.` });
     } catch (error) {
-        console.error(`Error starting session ${sessionId}:`, error);
         res.status(500).json({ success: false, error: error.message });
     }
 });
 
 app.get('/session/:sessionId/status', (req, res) => {
     const { sessionId } = req.params;
-    if (sessions[sessionId]) {
-        res.json({ status: sessions[sessionId].status, user: sessions[sessionId].sock?.user });
-    } else {
-        res.json({ status: 'offline' });
-    }
+    res.json({ status: sessions[sessionId]?.status || 'offline', user: sessions[sessionId]?.sock?.user });
 });
 
 app.get('/sessions', (req, res) => {
     const sessionStatus = {};
     for (const id in sessions) {
-        sessionStatus[id] = {
-            status: sessions[id].status,
-            user: sessions[id].sock?.user
-        };
+        sessionStatus[id] = { status: sessions[id].status, user: sessions[id].sock?.user };
     }
     res.json(sessionStatus);
 });
 
-// 🟢 API فحص صحة الجلسات ونسبة الخطر
 app.get('/sessions/health', (req, res) => {
     const sessionKeys = Object.keys(sessions);
-    if (sessionKeys.length === 0) {
-        return res.json([{ sessionId: "default", sendAttempts: 0, disconnectEvents: 0, currentStatus: "offline", banRiskPercentage: "0%" }]);
-    }
+    if (sessionKeys.length === 0) return res.json([{ sessionId: "default", sendAttempts: 0, disconnectEvents: 0, currentStatus: "offline", banRiskPercentage: "0%" }]);
+    
     const healthData = sessionKeys.map(sessionId => {
         const session = sessions[sessionId];
-        let sendAttempts = session.sendAttempts || 0;
-        let disconnects = session.confirmedBanEvents || 0;
-        let riskPercentage = 0;
-        if (disconnects > 0) riskPercentage += disconnects * 30; 
-        if (sendAttempts > 50) riskPercentage += 10;
-        if (sendAttempts > 200) riskPercentage += 20;
-        if (riskPercentage > 100) riskPercentage = 100;
+        let riskPercentage = (session.confirmedBanEvents || 0) * 30 + ((session.sendAttempts || 0) > 50 ? 10 : 0);
         return {
             sessionId: sessionId,
             currentStatus: session.status || 'offline',
-            sendAttempts: sendAttempts,
-            disconnectEvents: disconnects,
-            banRiskPercentage: `${riskPercentage}%`
+            sendAttempts: session.sendAttempts || 0,
+            disconnectEvents: session.confirmedBanEvents || 0,
+            banRiskPercentage: `${Math.min(riskPercentage, 100)}%`,
+            queueLength: messageQueue.length
         };
     });
     res.json(healthData);
@@ -93,46 +76,34 @@ app.get('/sessions/health', (req, res) => {
 
 async function startWhatsAppSession(sessionId = 'default') {
     if (sessions[sessionId] && sessions[sessionId].sock) {
-        try {
-            sessions[sessionId].sock.ev.removeAllListeners();
-            sessions[sessionId].sock.ws?.close();
-        } catch (e) {}
+        try { sessions[sessionId].sock.ev.removeAllListeners(); sessions[sessionId].sock.ws?.close(); } catch (e) {}
     }
 
     const authPath = `auth_info_baileys_${sessionId}`;
     const { state, saveCreds } = await useMultiFileAuthState(authPath);
-    const { version, isLatest } = await fetchLatestBaileysVersion();
-    
-    console.log(`ℹ️ تشغيل واتساب بـ Version: ${version.join('.')} (Is Latest: ${isLatest})`);
-    const logger = P({ level: 'silent' });
+    const { version } = await fetchLatestBaileysVersion();
     
     const sock = makeWASocket({
         version,
         auth: state,
         printQRInTerminal: true, 
-        logger,
-        browser: ['Ubuntu', 'Chrome', '20.0.04'], // 🔴 البصمة عشان واتساب ميقفلش الجلسة
+        logger: P({ level: 'silent' }),
+        browser: ['MacOS', 'Safari', '27.0'], // 🔴 التعديل بتاع الماك بوك هنا
         syncFullHistory: false,
         connectTimeoutMs: 60000,
-        defaultQueryTimeoutMs: 60000,
         keepAliveIntervalMs: 15000,
-        markOnlineOnConnect: true,
-        generateHighQualityLinkPreview: true
+        markOnlineOnConnect: true
     });
 
     sessions[sessionId] = { 
-        sock, 
-        status: 'connecting',
+        sock, status: 'connecting',
         sendAttempts: sessions[sessionId]?.sendAttempts || 0,
-        confirmedBanEvents: sessions[sessionId]?.confirmedBanEvents || 0,
-        banSignals: sessions[sessionId]?.banSignals || []
+        confirmedBanEvents: sessions[sessionId]?.confirmedBanEvents || 0
     };
 
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
-        
         if (qr) {
-            console.log(`\n📲 [${sessionId}] تم توليد QR code جديد!`);
             try {
                 const qrImage = await qrcode.toDataURL(qr);
                 io.emit('qr', { sessionId, qrImage, qrRaw: qr });
@@ -142,16 +113,9 @@ async function startWhatsAppSession(sessionId = 'default') {
 
         if (connection === 'close') {
             let reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
-            console.log(`❌ الاتصال مقفول لجلسة [${sessionId}]. السبب: ${reason || 'غير معروف'}`);
-            
             if (reason === DisconnectReason.loggedOut) {
-                console.log(`🧹 مسح ملفات الجلسة المنتهية [${sessionId}]...`);
-                if (sessions[sessionId]) {
-                    sessions[sessionId].confirmedBanEvents = (sessions[sessionId].confirmedBanEvents || 0) + 1;
-                }
-                if (fs.existsSync(authPath)) {
-                    fs.rmSync(authPath, { recursive: true, force: true });
-                }
+                if (sessions[sessionId]) sessions[sessionId].confirmedBanEvents++;
+                if (fs.existsSync(authPath)) fs.rmSync(authPath, { recursive: true, force: true });
                 delete sessions[sessionId];
                 io.emit('status', { sessionId, status: 'logged_out' });
             } else {
@@ -160,11 +124,7 @@ async function startWhatsAppSession(sessionId = 'default') {
                 setTimeout(() => startWhatsAppSession(sessionId), 5000);
             }
         } else if (connection === 'open') {
-            console.log(`\n✅ الجلسة متصلة وجاهزة! [${sessionId}]`);
-            if (sessions[sessionId]) {
-                sessions[sessionId].status = 'connected';
-                sessions[sessionId].sock = sock;
-            }
+            if (sessions[sessionId]) { sessions[sessionId].status = 'connected'; sessions[sessionId].sock = sock; }
             io.emit('status', { sessionId, status: 'connected', user: sock.user });
         }
     });
@@ -173,106 +133,89 @@ async function startWhatsAppSession(sessionId = 'default') {
     return sock;
 }
 
-// 🛠️ دالة تحويل الرقم وإصلاح صيغة الأرقام المصرية تلقائياً
 function getSanitizedJid(number) {
     let cleanNumber = number.toString().replace(/[^0-9]/g, '');
-    if (cleanNumber.startsWith('0') && cleanNumber.length === 11) {
-        cleanNumber = '20' + cleanNumber.substring(1); 
-    }
+    if (cleanNumber.startsWith('0') && cleanNumber.length === 11) cleanNumber = '20' + cleanNumber.substring(1); 
     return `${cleanNumber}@s.whatsapp.net`;
 }
 
-// 🎭 محاكاة سريعة وواقعية للكتابة تعتمد على طول الرسالة
 async function simulateHumanTyping(sock, jid, message = "") {
     try {
-        // كل حرف بياخد تقريباً 150 مللي ثانية، بحد أدنى 4 ثواني وحد أقصى 25 ثانية
         let typeDuration = Math.max(4000, Math.min(25000, message.length * 150));
-        
         await sock.sendPresenceUpdate('composing', jid);
-        
-        // لو الرسالة هتاخد أكتر من 10 ثواني كتابة، هنعمل حركة واقعية (يتوقف ثانية في النص بيفكر ويكمل)
         if (typeDuration > 10000) {
             await new Promise(r => setTimeout(r, typeDuration / 2));
-            await sock.sendPresenceUpdate('paused', jid); // يوقف كتابة
-            await new Promise(r => setTimeout(r, 1500));  // يستريح ثانية ونص
-            await sock.sendPresenceUpdate('composing', jid); // يرجع يكمل كتابة
+            await sock.sendPresenceUpdate('paused', jid);
+            await new Promise(r => setTimeout(r, 1500));
+            await sock.sendPresenceUpdate('composing', jid);
             await new Promise(r => setTimeout(r, typeDuration / 2));
         } else {
             await new Promise(r => setTimeout(r, typeDuration));
         }
-        
         await sock.sendPresenceUpdate('paused', jid);
-    } catch (e) {
-        console.warn("Typing simulation error:", e.message);
+    } catch (e) {}
+}
+
+// 🚦 نظام الطابور (Queue) الذكي لمعالجة الرسايل في الخلفية
+async function processMessageQueue() {
+    if (isProcessingQueue) return;
+    isProcessingQueue = true;
+
+    while (messageQueue.length > 0) {
+        const task = messageQueue[0]; // نقرأ أول رسالة
+        let session = sessions[task.sessionId];
+
+        if (!session || !session.sock || session.status !== 'connected') {
+            console.log(`⚠️ Queue: Session offline, pausing for 10s...`);
+            await new Promise(r => setTimeout(r, 10000));
+            continue; // نوقف الطابور شوية لحد ما الجلسة ترجع
+        }
+
+        // لو الجلسة شغالة، نشيل الرسالة من الطابور ونبعتها
+        messageQueue.shift();
+
+        try {
+            session.sendAttempts++;
+            if (task.showTyping) await simulateHumanTyping(session.sock, task.jid, task.message);
+            await session.sock.sendMessage(task.jid, { text: task.message });
+            console.log(`✅ Queued Message sent to ${task.jid} (Remaining: ${messageQueue.length})`);
+            
+            // انتظار واقعي بين كل رسالة والتانية (حسب الحملة أو 5 ثواني لو رسالة فردية)
+            const randomDelay = (task.delay || 5000) + Math.floor(Math.random() * 8000);
+            await new Promise(r => setTimeout(r, randomDelay));
+        } catch (err) {
+            console.error(`❌ Queue Error sending to ${task.jid}:`, err.message);
+            await new Promise(r => setTimeout(r, 5000));
+        }
     }
+    isProcessingQueue = false;
 }
 
 app.post('/send-message', async (req, res) => {
     const { sessionId = 'default', number, message, showTyping = true } = req.body;
     if (!number || !message) return res.status(400).json({ error: 'Number and message are required' });
 
-    let session = sessions[sessionId];
-    if (!session || !session.sock || session.status !== 'connected') {
-        return res.status(503).json({ error: `Session disconnected.` });
-    }
-
-    try {
-        session.sendAttempts = (session.sendAttempts || 0) + 1;
-        const jid = getSanitizedJid(number);
-
-        if (showTyping) await simulateHumanTyping(session.sock, jid, message);
-
-        await session.sock.sendMessage(jid, { text: message });
-        console.log(`✅ Message sent to ${jid}`);
-        res.json({ success: true, sessionId, sentTo: jid });
-    } catch (err) {
-        console.error(`❌ Error sending message:`, err.message);
-        res.status(500).json({ error: 'Failed to send message.' });
-    }
+    const jid = getSanitizedJid(number);
+    messageQueue.push({ sessionId, jid, message, showTyping, delay: 5000 });
+    
+    // نرد على ريبليت فوراً عشان متعملش (Failed) أو (Retry)
+    res.json({ success: true, sessionId, status: 'queued' });
+    processMessageQueue();
 });
 
 app.post('/send-campaign', async (req, res) => {
     const { sessionId = 'default', numbers, message, delay = 15000, showTyping = true } = req.body;
     if (!numbers || !Array.isArray(numbers) || !message) return res.status(400).json({ error: 'Numbers array and message are required' });
 
-    const session = sessions[sessionId];
-    if (!session || !session.sock || session.status !== 'connected') {
-        return res.status(400).json({ error: `Session ${sessionId} is not connected.` });
+    // نرد فوراً على الموقع
+    res.json({ success: true, message: 'Campaign added to queue', total: numbers.length });
+
+    // نضيف الأرقام كلها للطابور
+    for (const number of numbers) {
+        const jid = getSanitizedJid(number);
+        messageQueue.push({ sessionId, jid, message, showTyping, delay });
     }
-
-    // إرسال الرد للواجهة فوراً عشان الواجهة متعلقش
-    res.json({ success: true, message: 'Campaign started in background', total: numbers.length });
-
-    console.log(`🚀 Starting campaign to ${numbers.length} numbers on session [${sessionId}]`);
-    
-    // تشغيل الحملة في الخلفية بهدوء وبدون ضغط
-    (async () => {
-        for (const number of numbers) {
-            try {
-                if (!sessions[sessionId] || sessions[sessionId].status !== 'connected') {
-                    console.log(`⚠️ Session offline, pausing campaign...`);
-                    await new Promise(r => setTimeout(r, 10000));
-                    continue;
-                }
-
-                sessions[sessionId].sendAttempts = (sessions[sessionId].sendAttempts || 0) + 1;
-                const jid = getSanitizedJid(number);
-                
-                if (showTyping) {
-                    await simulateHumanTyping(sessions[sessionId].sock, jid, message);
-                }
-
-                await sessions[sessionId].sock.sendMessage(jid, { text: message });
-                console.log(`✅ Campaign: Message sent to ${jid}`);
-                
-                const randomDelay = delay + Math.floor(Math.random() * 8000);
-                await new Promise(resolve => setTimeout(resolve, randomDelay));
-            } catch (err) {
-                console.error(`❌ Campaign: Error sending to ${number}:`, err.message);
-                await new Promise(r => setTimeout(r, 5000));
-            }
-        }
-    })();
+    processMessageQueue();
 });
 
 const checkAndInitSessions = async () => {
@@ -281,23 +224,17 @@ const checkAndInitSessions = async () => {
         const authFolders = files.filter(file => file.startsWith('auth_info_baileys_'));
         if (authFolders.length > 0) {
             for (const folder of authFolders) {
-                const actualSessionId = folder.replace('auth_info_baileys_', '');
-                console.log(`🔄 جاري استعادة الجلسة [${actualSessionId}]...`);
-                await startWhatsAppSession(actualSessionId);
+                await startWhatsAppSession(folder.replace('auth_info_baileys_', ''));
             }
         } else {
-            console.log(`🚀 البدء التلقائي للجلسة الافتراضية [default]...`);
             await startWhatsAppSession('default');
         }
     } catch (err) {}
 };
 
-// 🟢 منع السيرفر من النوم
 const RENDER_EXTERNAL_URL = process.env.RENDER_EXTERNAL_URL;
 if (RENDER_EXTERNAL_URL) {
-    setInterval(() => {
-        http.get(RENDER_EXTERNAL_URL, (res) => {}).on('error', (err) => {});
-    }, 5 * 60 * 1000);
+    setInterval(() => http.get(RENDER_EXTERNAL_URL).on('error', () => {}), 5 * 60 * 1000);
 }
 
 server.listen(port, () => {
