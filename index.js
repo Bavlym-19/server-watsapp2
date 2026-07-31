@@ -87,7 +87,7 @@ async function startWhatsAppSession(sessionId = 'default') {
         version,
         auth: state,
         logger: P({ level: 'silent' }),
-        browser:['macOS','Bavly'], // 🔴 بصمة الماك بوك الصحيحة
+        browser:['macOS M4 Pro','Bavly'], // 🔴 بصمة الماك بوك الصحيحة
         syncFullHistory: false,
         connectTimeoutMs: 60000,
         keepAliveIntervalMs: 15000,
